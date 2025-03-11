@@ -82,9 +82,9 @@ class DDPG(BaseAgent):
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         states = batch['states'].to(self.device)
         actions = batch['actions'].to(self.device)
-        rewards = torch.tensor(batch['rewards']).to(self.device)
+        rewards = torch.tensor(batch['rewards'], device=self.device)
         next_states = batch['next_states'].to(self.device)
-        terminated = torch.tensor(batch['terminated']).to(self.device)
+        terminated = torch.tensor(batch['terminated'], device=self.device)
         
         # Update critic
         with torch.no_grad():

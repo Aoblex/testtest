@@ -40,9 +40,9 @@ class REINFORCE(BaseAgent):
         
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         rewards = batch['rewards']
-        log_probs = batch['action_infos'][0]  # Only log_probs, no values
+        log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
         
-        returns = compute_returns(rewards, self.gamma)
+        returns = compute_returns(rewards, self.gamma, device=self.device)
         returns = normalize(returns)
         
         policy_loss = []
