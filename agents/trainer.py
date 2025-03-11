@@ -81,7 +81,9 @@ class RLTrainer:
         for episode in range(num_episodes):
             # Collect trajectory
             self.agent.train()
-            trajectory = self.collector.collect_trajectory(max_steps)
+            
+            with torch.no_grad():
+                trajectory = self.collector.collect_trajectory(max_steps)
             
             # Update agent
             metrics = self.agent.update(trajectory)
