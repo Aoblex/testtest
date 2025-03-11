@@ -11,16 +11,31 @@ from utils.metrics import compute_returns, compute_advantage
 from utils.transform import normalize
 
 class A2C(BaseAgent):
-    def __init__(self, state_dim: int, action_dim: int, lr: float = 3e-4,
-                 gamma: float = 0.99, value_coef: float = 0.5, 
-                 entropy_coef: float = 0.01):
-        self.network = ActorCriticNetwork(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        lr: float = 3e-4,
+        gamma: float = 0.99,
+        value_coef: float = 0.5,
+        entropy_coef: float = 0.01,
+        device: str = "cpu"
+    ):
+        self.lr = lr  # Save before super().__init__
         self.gamma = gamma
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
+        super().__init__(state_dim, action_dim, device)
+        
+    def init_networks(self) -> None:
+        self.network = ActorCriticNetwork(
+            self.state_dim, 
+            self.action_dim
+        ).to(self.device)
+        self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
         
     def select_action(self, state: torch.Tensor) -> Tuple[int, torch.Tensor, torch.Tensor]:
+        state = state.to(self.device)
         logits, value = self.network(state)
         dist = Categorical(logits=logits)
         action = dist.sample()
@@ -28,13 +43,13 @@ class A2C(BaseAgent):
         return action.item(), log_prob, value
         
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        states = batch['states']
-        actions = batch['actions']
+        states = batch['states'].to(self.device)
+        actions = batch['actions'].to(self.device)
         rewards = batch['rewards']
         log_probs, values = batch['action_infos']
-        next_value = values[-1] if not batch['dones'][-1] else 0.0
+        next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
-        # Calculate returns and advantages using utility functions
+        # Calculate returns and advantages
         returns = compute_returns(rewards, self.gamma)
         advantages = compute_advantage(rewards, values, next_value, 
                                     self.gamma, lambda_=0.95)

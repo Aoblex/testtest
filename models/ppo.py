@@ -3,42 +3,67 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
-from models.networks import ActorCriticNetwork
-from utils.metrics import compute_gae
+from .networks import ActorCriticNetwork
+from .base import BaseAgent
+from utils.metrics import compute_returns, compute_advantage
 from utils.transform import normalize
 
-class PPO:
-    def __init__(self, state_dim: int, action_dim: int, lr: float = 3e-4,
-                 gamma: float = 0.99, epsilon: float = 0.2, 
-                 value_coef: float = 0.5, entropy_coef: float = 0.01):
-        self.network = ActorCriticNetwork(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
+class PPO(BaseAgent):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        lr: float = 3e-4,
+        gamma: float = 0.99,
+        epsilon: float = 0.2,
+        value_coef: float = 0.5,
+        entropy_coef: float = 0.01,
+        device: str = "cpu"
+    ):
+        self.lr = lr
         self.gamma = gamma
         self.epsilon = epsilon
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
+        super().__init__(state_dim, action_dim, device)
+        
+    def init_networks(self) -> None:
+        self.network = ActorCriticNetwork(
+            self.state_dim, 
+            self.action_dim
+        ).to(self.device)
+        self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
         
     def select_action(self, state: torch.Tensor) -> Tuple[int, torch.Tensor, torch.Tensor]:
+        state = state.to(self.device)
         logits, value = self.network(state)
         dist = Categorical(logits=logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
         return action.item(), log_prob, value
         
-    def update(self, states: torch.Tensor, actions: torch.Tensor,
-              old_log_probs: List[torch.Tensor], rewards: List[float],
-              values: List[torch.Tensor], next_value: torch.Tensor) -> Tuple[float, float]:
+    def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
+        states = batch['states'].to(self.device)
+        actions = batch['actions'].to(self.device)
+        rewards = batch['rewards']
+        old_log_probs, values = batch['action_infos']
+        next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
         # Calculate advantages using GAE
-        advantages = compute_gae(rewards, values, next_value, self.gamma, 0.95)
+        advantages = compute_advantage(rewards, values, next_value, self.gamma, 0.95)
         advantages = normalize(advantages)
         
         # Calculate returns
-        returns = advantages + torch.tensor(values)
+        returns = compute_returns(rewards, self.gamma)
         
-        for _ in range(10):  # PPO epochs
+        total_policy_loss = 0
+        total_value_loss = 0
+        total_entropy = 0
+        
+        # PPO epochs
+        for _ in range(10):
             logits, current_values = self.network(states)
             dist = Categorical(logits=logits)
             current_log_probs = dist.log_prob(actions)
@@ -62,4 +87,13 @@ class PPO:
             loss.backward()
             self.optimizer.step()
             
-        return policy_loss.item(), value_loss.item() 
+            total_policy_loss += policy_loss.item()
+            total_value_loss += value_loss.item()
+            total_entropy += entropy.item()
+            
+        num_epochs = 10
+        return {
+            'policy_loss': total_policy_loss / num_epochs,
+            'value_loss': total_value_loss / num_epochs,
+            'entropy': total_entropy / num_epochs
+        } 
