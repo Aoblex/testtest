@@ -377,9 +377,10 @@ class A2CAgent:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         return advantages
+
     def update(
         self,
-    ) -> None:
+    ) -> Tuple[float, float]:
         """Update the model using A2C algorithm."""
         # Get data from buffer
         action_info = self.buffer.get_action_info_list()
@@ -388,11 +389,10 @@ class A2CAgent:
         log_probs = torch.stack([info["log_prob"] for info in action_info]).to(self.device)
         
         # Compute GAE and returns
-        td_errors, advantages = self.get_td_errors_and_advantages(
+        advantages = self.get_advantages(
             gamma=self.gamma,
             gae_lambda=self.gae_lambda
         )
-        td_errors = td_errors.to(self.device)
         advantages = advantages.to(self.device)
         
         # Compute losses
@@ -406,6 +406,9 @@ class A2CAgent:
         self.model.optimizer.zero_grad()
         total_loss.backward()
         self.model.optimizer.step()
+
+        # Return the policy loss and value loss.
+        return policy_loss.item(), value_loss.item()
 
     def save_model(
         self,
@@ -458,11 +461,12 @@ class A2CAgent:
         epoch_returns = []
         for epoch in range(num_epochs):
             self.rollout(num_steps)
-            self.update()
+            policy_loss, value_loss = self.update()
 
-            epoch_return, epoch_length = self.get_mean_episode_return_and_length()
+            epoch_return = self.get_mean_episode_return()
             print(f"Epoch {epoch + 1}/{num_epochs} - "
-                  f"Return: {epoch_return:.2f}, Length: {epoch_length:.2f}")
+                  f"Return: {epoch_return:.2f}, "
+                  f"Policy Loss: {policy_loss:.2f}, Value Loss: {value_loss:.2f}")
 
             if (epoch + 1) % self.model_save_interval == 0:
                 self.save_model(epoch)
