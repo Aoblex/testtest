@@ -18,7 +18,7 @@ def main():
             'epsilon': 0.2,
             'value_coef': 0.5,
             'entropy_coef': 0.01,
-            'num_epochs': 10
+            'num_minibatches': 16
         }
     )
     

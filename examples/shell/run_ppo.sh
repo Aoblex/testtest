@@ -10,6 +10,6 @@ python train.py \
   --epsilon 0.2 \
   --value-coef 0.5 \
   --entropy-coef 0.01 \
-  --num-epochs 10 \
+  --num-minibatches 16 \
   --seed 42
 
