@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 
 from models.base import BaseAgent
+from models.ppo import PPO
 from utils.collector import TrajectoryCollector
 
 class RLTrainer:
@@ -78,11 +79,21 @@ class RLTrainer:
             num_eval_episodes: Number of episodes for evaluation
             save_interval: Episodes between saving checkpoints
         """
+
+        if isinstance(self.agent, PPO):
+            enable_grad = False
+        else:
+            enable_grad = True
+
         for episode in range(num_episodes):
-            # Collect trajectory
-            self.agent.train()
+            # Collect trajectory without gradients for old policy
+            if enable_grad:
+                self.agent.train()  # Still in train mode, but will collect without gradients
+            else:
+                self.agent.eval()
             
-            trajectory = self.collector.collect_trajectory(max_steps)
+            # if current agent uses PPO algorithm, we need to collect trajectory without gradients
+            trajectory = self.collector.collect_trajectory(max_steps, enable_grad=enable_grad)
             
             # Update agent
             metrics = self.agent.update(trajectory)
@@ -127,7 +138,8 @@ class RLTrainer:
         returns = []
         
         for _ in range(num_episodes):
-            trajectory = self.collector.collect_trajectory(max_steps)
+            # During evaluation, we don't need gradients
+            trajectory = self.collector.collect_trajectory(max_steps, enable_grad=False)
             returns.append(sum(trajectory['rewards']))
             
         return np.mean(returns)
