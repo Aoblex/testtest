@@ -93,6 +93,7 @@ class PPO(BaseAgent):
             # Retain graph for all iterations except the last one
             retain_graph = epoch < self.num_epochs - 1
             loss.backward(retain_graph=retain_graph)
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=0.5)
             self.optimizer.step()
             
             total_policy_loss += policy_loss.item()
