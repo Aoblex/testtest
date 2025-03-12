@@ -99,13 +99,13 @@ class RLTrainer:
             metrics = self.agent.update(trajectory)
             
             # Log metrics
-            episode_return = sum(trajectory['rewards'])
-            episode_length = len(trajectory['rewards'])
+            episode_return = TrajectoryCollector.compute_mean_episode_return(trajectory)
+            episode_length = TrajectoryCollector.compute_mean_episode_length(trajectory)
             self.train_returns.append(episode_return)
             self.episode_lengths.append(episode_length)
             
             # Print progress
-            print(f"Episode {episode + 1}/{num_episodes} - Return: {episode_return:.2f}, Length: {episode_length}")
+            print(f"Episode {episode + 1}/{num_episodes} - Mean Return: {episode_return:.2f}, Mean Length: {episode_length}")
             for name, value in metrics.items():
                 print(f"  {name}: {value:.4f}")
             
@@ -140,7 +140,9 @@ class RLTrainer:
         for _ in range(num_episodes):
             # During evaluation, we don't need gradients
             trajectory = self.collector.collect_trajectory(max_steps, enable_grad=False)
-            returns.append(sum(trajectory['rewards']))
+            returns.append(
+                TrajectoryCollector.compute_mean_episode_return(trajectory)
+            )
             
         return np.mean(returns)
     

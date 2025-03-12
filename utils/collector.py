@@ -6,7 +6,7 @@ import numpy as np
 from models.base import BaseAgent
 
 class TrajectoryCollector:
-    """Collects trajectories by running an agent in an environment"""
+    """Collects trajectories and computes various RL metrics"""
     
     def __init__(self, env: gym.Env, agent: BaseAgent):
         """
@@ -112,4 +112,148 @@ class TrajectoryCollector:
         for _ in range(num_trajectories):
             trajectory = self.collect_trajectory(max_steps, enable_grad)
             trajectories.append(trajectory)
-        return trajectories 
+        return trajectories
+
+    @classmethod
+    def compute_mean_episode_length(
+        self,
+        trajectory: Dict[str, Any]
+    ) -> float:
+        """Compute the mean episode length of a trajectory.
+        
+        Args:
+            trajectory: Trajectory dictionary containing rewards and masks,
+                        each episode is separated by a mask value of 0
+            
+        Returns:
+            Mean episode length
+        """
+        # First extract the episodes by mask value
+        episodes = []
+        current_episode = []
+        assert len(trajectory['rewards']) == len(trajectory['masks']), \
+               "The length of rewards and masks must be the same"
+        for reward, mask in zip(trajectory['rewards'], trajectory['masks']):
+            current_episode.append(reward)
+            if mask == 0:
+                episodes.append(current_episode)
+                current_episode = []
+        return np.mean([len(episode) for episode in episodes])
+    
+    @classmethod
+    def compute_mean_episode_return(
+        self,
+        trajectory: Dict[str, Any]
+    ) -> float:
+        """Compute the mean episode return of a trajectory.
+        
+        Args:
+            trajectory: Trajectory dictionary containing rewards and masks,
+                        each episode is separated by a mask value of 0
+            
+        Returns:
+            Mean episode return
+        """ 
+        # First extract the episodes by mask value
+        episodes_returns = []
+        current_episode_returns = []
+        assert len(trajectory['rewards']) == len(trajectory['masks']), \
+               "The length of rewards and masks must be the same"
+        for reward, mask in zip(trajectory['rewards'], trajectory['masks']):
+            current_episode_returns.append(reward)
+            if mask == 0:
+                episodes_returns.append(current_episode_returns)
+                current_episode_returns = []
+        return np.mean([sum(returns) for returns in episodes_returns])
+    
+    @classmethod
+    def compute_returns(
+        self,
+        trajectory: Dict[str, Any],
+        gamma: float,
+    ) -> torch.Tensor:
+        """Compute discounted returns with proper masking for episode boundaries.
+        
+        Args:
+            trajectory: Trajectory dictionary containing rewards and masks
+            gamma: Discount factor
+            
+        Returns:
+            Tensor of discounted returns
+        """
+        rewards = torch.tensor(trajectory['rewards'])
+        masks = trajectory['masks']
+        returns = torch.zeros_like(rewards)
+        
+        running_return = 0
+        for t in reversed(range(len(rewards))):
+            running_return = rewards[t] + gamma * running_return * masks[t]
+            returns[t] = running_return
+            
+        return returns
+
+    @classmethod
+    def compute_advantages(
+        self,
+        trajectory: Dict[str, Any],
+        gamma: float,
+        gae_lambda: float
+    ) -> torch.Tensor:
+        """Compute Generalized Advantage Estimation (GAE).
+        
+        Args:
+            trajectory: Trajectory dictionary containing rewards, values, and masks
+            gamma: Discount factor
+            gae_lambda: GAE lambda parameter
+            
+        Returns:
+            Tensor of advantage estimates
+        """
+        rewards = torch.tensor(trajectory['rewards'])
+        values = torch.stack(trajectory['action_infos'][1])  # Assuming values are second item
+        masks = trajectory['masks']
+        
+        advantages = torch.zeros_like(rewards)
+        running_advantage = 0
+        
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_value = 0  # Terminal state
+            else:
+                next_value = values[t + 1]
+                
+            delta = rewards[t] + gamma * next_value * masks[t] - values[t]
+            running_advantage = delta + gamma * gae_lambda * running_advantage * masks[t]
+            advantages[t] = running_advantage
+            
+        return advantages
+
+    @classmethod
+    def compute_td_errors(
+        self,
+        trajectory: Dict[str, Any],
+        gamma: float
+    ) -> torch.Tensor:
+        """Compute TD errors for value function learning.
+        
+        Args:
+            trajectory: Trajectory dictionary containing rewards, values, and masks
+            gamma: Discount factor
+            
+        Returns:
+            Tensor of TD errors
+        """
+        rewards = torch.tensor(trajectory['rewards'])
+        values = torch.stack(trajectory['action_infos'][1])  # Assuming values are second item
+        masks = trajectory['masks']
+        
+        td_errors = torch.zeros_like(rewards)
+        
+        for t in range(len(rewards) - 1):
+            td_target = rewards[t] + gamma * values[t + 1] * masks[t]
+            td_errors[t] = td_target - values[t]
+            
+        # Handle last step
+        td_errors[-1] = rewards[-1] - values[-1]  # No next state for last step
+        
+        return td_errors 
