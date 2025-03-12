@@ -483,6 +483,330 @@ class A2CAgent:
         if plot:
             self.plot_results(epoch_returns)
 
+class PPOAgent:
+
+    def __init__(
+        self,
+        env_id: str | gym.envs.registration.EnvSpec,
+        **kwargs,
+    ) -> None:
+        """Initialize the PPO agent."""
+
+        # Configure the environment.
+        self.env = gym.make(env_id)
+
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+
+        if not isinstance(self.observation_space, gym.spaces.Box):
+            raise ValueError("Observation space must be a Box.")
+        
+        if not isinstance(self.action_space, gym.spaces.Discrete):
+            raise ValueError("Action space must be a Discrete.")
+
+        # Configure the model.
+        self.device = kwargs.pop(
+            "device",
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        self.model = PPO(
+            state_dim=self.observation_space.shape[0],
+            action_dim=self.action_space.n,
+            device=self.device,
+        ).to(self.device)
+
+        # Initialize the buffer.
+        self.buffer = ReplayBuffer()
+
+        # Training parameters.
+        self.num_epochs = kwargs.pop("num_epochs", 100)
+        self.num_steps = kwargs.pop("num_steps", 1000)
+        self.batch_size = kwargs.pop("batch_size", 64)
+        self.clip_ratio = kwargs.pop("clip_ratio", 0.2)
+        self.entropy_coef = kwargs.pop("entropy_coef", 0.01)
+        self.value_coef = kwargs.pop("value_coef", 0.5)
+        self.max_grad_norm = kwargs.pop("max_grad_norm", 0.5)
+        self.gae_lambda = kwargs.pop("gae_lambda", 0.95)
+        self.gamma = kwargs.pop("gamma", 0.99)
+
+        # Save settings.
+        self.model_save_interval = kwargs.pop("model_save_interval", 100)
+        self.model_save_dir = kwargs.pop(
+            "model_save_dir",
+            Path("results") / self.env.unwrapped.spec.id / \
+                self.model.__class__.__name__ / \
+                datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
+        self.model_save_dir.mkdir(parents=True, exist_ok=True)
+        
+    def rollout(
+        self,
+        num_steps: int,
+        requires_grad: bool = True,
+    ) -> ReplayBuffer:
+        """Rollout the agent for a given number of steps.
+        
+        Args:
+            num_steps: Number of steps to rollout the agent for.
+            
+        Returns:
+            buffer: The replay buffer containing the rollout.
+        """
+        state, info = self.env.reset()
+        terminated = False
+        truncated = False
+
+        for _ in range(num_steps):
+            action, action_info = self.model.select_action(
+                state,
+                requires_grad=requires_grad
+            )
+            next_state, reward, terminated, truncated, info = self.env.step(action.item())
+
+            self.buffer.push(
+                next_state,
+                reward,
+                terminated,
+                truncated,
+                info,
+                state,
+                action,
+                action_info
+            )
+
+            if terminated or truncated:
+                state, info = self.env.reset()
+            else:
+                state = next_state
+
+        return self.buffer
+
+    def get_mean_episode_return(
+        self,
+    ) -> float:
+        """Get the mean episode return of the agent."""
+        episodes_returns = []
+        current_episode_returns = []
+        for reward, mask in zip(self.buffer.get_reward_list(),
+                                self.buffer.get_mask_list()):
+            current_episode_returns.append(reward)
+            if mask == 0:
+                episodes_returns.append(current_episode_returns)
+                current_episode_returns = []
+        
+        # Remember to append the last episode.
+        episodes_returns.append(current_episode_returns)
+
+        return np.mean([sum(returns) for returns in episodes_returns])
+
+    def get_returns(
+        self,
+        gamma: float,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """Get the returns of the agent. Usually represented as G_t in the literature."""
+        rewards = torch.tensor(self.buffer.get_reward_list())
+        masks = torch.tensor(self.buffer.get_mask_list())
+        returns = torch.zeros_like(rewards)
+
+        running_return = 0
+        for t in reversed(range(len(rewards))):
+            running_return = rewards[t] + gamma * running_return * masks[t]
+            returns[t] = running_return
+
+        if normalize:
+            returns = (returns - returns.mean()) / returns.std()
+
+        return returns
+
+    def get_advantages(
+        self,
+        gamma: Optional[float] = None,  
+        gae_lambda: Optional[float] = None,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """Compute advantages using GAE."""
+        if gamma is None:
+            gamma = self.gamma
+
+        if gae_lambda is None:
+            gae_lambda = self.gae_lambda
+
+        advantages = torch.zeros(self.buffer.buffer_size)
+
+        rewards = torch.tensor(self.buffer.get_reward_list()).to(self.device)
+        masks = torch.tensor(self.buffer.get_mask_list()).to(self.device)
+        values = torch.stack([info["value"] for info in self.buffer.get_action_info_list()]).to(self.device)
+
+        running_gae = 0
+        for t in reversed(range(self.buffer.buffer_size - 1)):
+            td_error = rewards[t] \
+                + gamma * values[t + 1] * masks[t] \
+                - values[t]
+            running_gae = td_error \
+                + running_gae * gamma * gae_lambda * masks[t]
+            advantages[t] = running_gae
+            
+        if normalize:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        return advantages
+
+    def update(
+        self,
+    ) -> Tuple[float, float, float]:
+        """Update the model using PPO algorithm."""
+        shuffled_indices = torch.randperm(self.buffer.buffer_size)
+        o_returns = self.get_returns(
+            gamma=self.gamma,
+            normalize=False
+        ).to(self.device)
+        o_advantages = self.get_advantages(
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            normalize=True,
+        ).to(self.device)
+
+        policy_losses, value_losses, entropy_losses = [], [], []
+        for start in range(0, self.buffer.buffer_size, self.batch_size):
+            end = start + self.batch_size
+            b_indices = shuffled_indices[start:end]
+
+            # ob means old batch.
+            ob_states = torch.tensor(
+                np.array([
+                    self.buffer.get_state_list()[i] for i in b_indices
+                ]),
+                dtype=torch.float32
+            ).to(self.device)
+
+            ob_actions = torch.stack([
+                self.buffer.get_action_list()[i] for i in b_indices
+            ], dim=0).to(self.device)
+
+            ob_log_probs = torch.stack([
+                self.buffer.get_action_info_list()[i]["log_prob"] for i in b_indices
+            ]).to(self.device)
+
+            ob_returns = o_returns[b_indices]
+            ob_advantages = o_advantages[b_indices]
+            
+            # Compute the logits, values and entropies of current policy.
+            _, nb_action_info = self.model.select_action(
+                state=ob_states,
+                action=ob_actions,
+                requires_grad=True
+            )
+            nb_log_probs = nb_action_info["log_prob"]
+            nb_values = nb_action_info["value"]
+            nb_entropies = nb_action_info["entropy"]
+
+            # Compute the ratio (pi_theta / pi_theta_old)
+            b_ratio = torch.exp(nb_log_probs - ob_log_probs)
+
+            # Compute the policy loss
+            surr1 = b_ratio * ob_advantages
+            surr2 = torch.clamp(b_ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * ob_advantages
+            policy_loss = -torch.min(surr1, surr2).mean()
+
+            # Compute the value loss
+            value_loss = (nb_values - ob_returns).pow(2).mean()
+            
+            # Compute the entropy loss
+            entropy_loss = nb_entropies.mean()
+
+            # Compute the total loss
+            total_loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy_loss
+
+            # Update the model
+            self.model.optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.max_grad_norm
+            )
+            self.model.optimizer.step()
+
+            policy_losses.append(policy_loss.item())
+            value_losses.append(value_loss.item())
+            entropy_losses.append(entropy_loss.item())
+
+        return np.mean(policy_losses), np.mean(value_losses), np.mean(entropy_losses)
+
+    def save_model(
+        self,
+        epoch: int,
+    ) -> None:
+        """Save the model."""
+        torch.save(
+            self.model.state_dict(),
+            self.model_save_dir / f"PPO_epoch_{epoch}.pt"
+        )
+
+    def load_model(
+        self,
+        epoch: int,
+    ) -> None:
+        """Load the model."""
+        self.model.load_state_dict(
+            torch.load(self.model_save_dir / f"PPO_epoch_{epoch}.pt")
+        )
+
+    def plot_results(
+        self,
+        epoch_returns: List[float],
+        window_size: int = 10,
+    ) -> None:
+        """Plot training results."""
+        smoothed_returns = np.convolve(epoch_returns, np.ones(window_size) / window_size, mode="valid")
+        plt.plot(smoothed_returns, label="Smoothed Return")
+        plt.xlabel("Epoch")
+        plt.ylabel("Return")
+        plt.title("Return")
+        plt.legend()
+        plt.grid(True)
+
+        plt.tight_layout()
+        plt.savefig(self.model_save_dir / "results.png")
+        plt.close()
+
+    def train(
+        self,
+        num_epochs: Optional[int] = None,
+        num_steps: Optional[int] = None,
+        plot: bool = True,
+        window_size: int = 10,
+    ) -> None:
+        """Train the agent."""
+        if num_epochs is None:
+            num_epochs = self.num_epochs
+
+        if num_steps is None:
+            num_steps = self.num_steps
+            
+        epoch_returns = []
+        for epoch in range(num_epochs):
+            self.rollout(num_steps, requires_grad=False)
+            policy_loss, value_loss, entropy_loss = self.update()
+
+            epoch_return = self.get_mean_episode_return()
+            print(f"Epoch {epoch+1}/{num_epochs} - "
+                  f"Return: {epoch_return:.2f} - "
+                  f"Policy Loss: {policy_loss:.4f} - "
+                  f"Value Loss: {value_loss:.4f} - "
+                  f"Entropy Loss: {entropy_loss:.4f}")
+                
+            if (epoch + 1) % self.model_save_interval == 0:
+                self.save_model(epoch + 1)
+
+            epoch_returns.append(epoch_return)
+
+            # Remember to clear the buffer.
+            self.buffer.clear()
+
+        if plot:
+            self.plot_results(epoch_returns, window_size)
+
 __all__ = [
     "PPO", "REINFORCE", "A2C"
 ]

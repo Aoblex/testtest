@@ -183,7 +183,7 @@ class PPO(nn.Module):
                     action = action.to(self.device)
             log_prob = dist.log_prob(action)
             
-        return action.item(), {'log_prob': log_prob, 'value': value, 'entropy': dist.entropy()}
+        return action, {'log_prob': log_prob, 'value': value, 'entropy': dist.entropy()}
 
 class REINFORCE(nn.Module):
     """REINFORCE Algorithm"""
