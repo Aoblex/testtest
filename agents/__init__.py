@@ -287,7 +287,8 @@ class A2CAgent:
 
     def rollout(
         self,
-        num_steps: int
+        num_steps: int,
+        requires_grad: bool = True,
     ) -> ReplayBuffer:
         """Rollout the agent for a given number of steps.
         
@@ -304,7 +305,7 @@ class A2CAgent:
         for _ in range(num_steps):
             action, action_info = self.model.select_action(
                 state,
-                requires_grad=True
+                requires_grad=requires_grad
             )
             next_state, reward, terminated, truncated, info = self.env.step(action)
             
@@ -461,7 +462,7 @@ class A2CAgent:
 
         epoch_returns = []
         for epoch in range(num_epochs):
-            self.rollout(num_steps)
+            self.rollout(num_steps, requires_grad=True)
             policy_loss, value_loss = self.update()
 
             epoch_return = self.get_mean_episode_return()
