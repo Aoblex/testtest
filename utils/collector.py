@@ -17,11 +17,12 @@ class TrajectoryCollector:
         self.env = env
         self.agent = agent
         
-    def collect_trajectory(self, max_steps: int = 1000) -> Dict[str, Any]:
+    def collect_trajectory(self, max_steps: int = 1000, enable_grad: bool = False) -> Dict[str, Any]:
         """Collect a single trajectory.
         
         Args:
             max_steps: Maximum number of steps to take
+            enable_grad: Whether to enable gradient tracking during collection
             
         Returns:
             Dictionary containing:
@@ -51,10 +52,11 @@ class TrajectoryCollector:
             # Convert state to tensor
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             
-            # Select action
-            action_tuple = self.agent.select_action(state_tensor)
-            action = action_tuple[0]
-            action_info = action_tuple[1:]  # Additional info (e.g., log_probs, values)
+            # Select action with appropriate gradient context
+            with torch.set_grad_enabled(enable_grad):
+                action_tuple = self.agent.select_action(state_tensor)
+                action = action_tuple[0]
+                action_info = action_tuple[1:]
             
             # Take step in environment
             next_state, reward, terminated, truncated, info = self.env.step(action)
@@ -86,18 +88,20 @@ class TrajectoryCollector:
         }
     
     def collect_trajectories(self, num_trajectories: int,
-                           max_steps: int = 1000) -> List[Dict[str, Any]]:
+                           max_steps: int = 1000,
+                           enable_grad: bool = False) -> List[Dict[str, Any]]:
         """Collect multiple trajectories.
         
         Args:
             num_trajectories: Number of trajectories to collect
             max_steps: Maximum steps per trajectory
+            enable_grad: Whether to enable gradient tracking during collection
             
         Returns:
             List of trajectory dictionaries
         """
         trajectories = []
         for _ in range(num_trajectories):
-            trajectory = self.collect_trajectory(max_steps)
+            trajectory = self.collect_trajectory(max_steps, enable_grad)
             trajectories.append(trajectory)
         return trajectories 
