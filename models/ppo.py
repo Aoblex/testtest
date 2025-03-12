@@ -45,12 +45,12 @@ class PPO(BaseAgent):
         return action.item(), log_prob, value
         
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        states = batch['states'].to(self.device)
-        actions = batch['actions'].to(self.device)
+        states = batch['states'].detach().to(self.device)
+        actions = batch['actions'].detach().to(self.device)
         rewards = batch['rewards']
         # Unpack and move each tensor in the lists to device
-        old_log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
-        values = [value.to(self.device) for value in batch['action_infos'][1]]
+        old_log_probs = [log_prob.detach().to(self.device) for log_prob in batch['action_infos'][0]]
+        values = [value.detach().to(self.device) for value in batch['action_infos'][1]]
         next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
         # Calculate advantages using GAE
