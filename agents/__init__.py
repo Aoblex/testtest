@@ -224,7 +224,7 @@ class REINFORCEAgent:
                   f"Epoch Return: {epoch_return:.2f}")
 
             if (epoch + 1) % self.model_save_interval == 0:
-                self.save_model(epoch)
+                self.save_model(epoch + 1)
 
             epoch_returns.append(epoch_return)
 
@@ -473,7 +473,7 @@ class A2CAgent:
                   f"Policy Loss: {policy_loss:.2f}, Value Loss: {value_loss:.2f}")
 
             if (epoch + 1) % self.model_save_interval == 0:
-                self.save_model(epoch)
+                self.save_model(epoch + 1)
 
             epoch_returns.append(epoch_return)
 
