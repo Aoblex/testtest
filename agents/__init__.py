@@ -325,10 +325,10 @@ class A2CAgent:
 
         return self.buffer
 
-    def get_mean_episode_return_and_length(
+    def get_mean_episode_return(
         self,
-    ) -> Tuple[float, float]:
-        """Get the mean episode return and length of the agent."""
+    ) -> float:
+        """Get the mean episode return of the agent."""
         episodes_returns = []
         current_episode_returns = []
         for reward, mask in zip(self.buffer.get_reward_list(),
@@ -341,8 +341,7 @@ class A2CAgent:
         # Remember to append the last episode.
         episodes_returns.append(current_episode_returns)
     
-        return np.mean([sum(returns) for returns in episodes_returns]), \
-               np.mean([len(returns) for returns in episodes_returns])
+        return np.mean([sum(returns) for returns in episodes_returns])
 
     def get_td_errors_and_advantages(
         self,
