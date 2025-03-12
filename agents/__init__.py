@@ -349,6 +349,7 @@ class A2CAgent:
         self,
         gamma: Optional[float]= None,
         gae_lambda: Optional[float]= None,
+        normalize: bool = True,
     ) -> torch.Tensor:
 
         if gamma is None:
@@ -376,7 +377,8 @@ class A2CAgent:
         # Normalizing the advantages greatly improves the stability of the training process.
         # Notice that when it's normalized, the value loss will always be 1,
         # and the policy loss is always close to 0.(I don't know why)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if normalize:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         return advantages
 
