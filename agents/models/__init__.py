@@ -153,12 +153,14 @@ class PPO(nn.Module):
     def select_action(
         self,
         state: torch.Tensor | np.ndarray,
+        action: torch.Tensor | np.ndarray | None = None,
         requires_grad: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Select an action given the current state.
         
         Args:
             state: Current state tensor
+            action: Selected action
             requires_grad: Whether to require gradients
         Returns:
             action: Selected action
@@ -172,10 +174,16 @@ class PPO(nn.Module):
         with torch.set_grad_enabled(requires_grad):
             logits, value = self(state)
             dist = Categorical(logits=logits)
-            action = dist.sample()
+            if action is None:
+                action = dist.sample()
+            else:
+                if isinstance(action, np.ndarray):
+                    action = torch.from_numpy(action).long().to(self.device)
+                else:
+                    action = action.to(self.device)
             log_prob = dist.log_prob(action)
             
-        return action.item(), {'log_prob': log_prob, 'value': value}
+        return action.item(), {'log_prob': log_prob, 'value': value, 'entropy': dist.entropy()}
 
 class REINFORCE(nn.Module):
     """REINFORCE Algorithm"""
