@@ -343,11 +343,11 @@ class A2CAgent:
     
         return np.mean([sum(returns) for returns in episodes_returns])
 
-    def get_td_errors_and_advantages(
+    def get_advantages(
         self,
         gamma: Optional[float]= None,
         gae_lambda: Optional[float]= None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
 
         if gamma is None:
             gamma = self.gamma
@@ -355,7 +355,6 @@ class A2CAgent:
         if gae_lambda is None:
             gae_lambda = self.gae_lambda
 
-        td_errors = torch.zeros(self.buffer.buffer_size)
         advantages = torch.zeros(self.buffer.buffer_size)
 
         rewards = torch.tensor(self.buffer.get_reward_list()).to(self.device)
@@ -364,12 +363,20 @@ class A2CAgent:
 
         running_gae = 0
         for t in reversed(range(self.buffer.buffer_size - 1)):
-            td_errors[t] = rewards[t] + gamma * values[t + 1] * masks[t] - values[t]
-            advantages[t] = td_errors[t] + gamma * gae_lambda * masks[t] * running_gae
-            running_gae = advantages[t] + gamma * gae_lambda * masks[t] * running_gae
+        # https://discuss.pytorch.org/t/categorical-distribution-returning-breaking/165343
+            td_error = rewards[t] \
+                + gamma * values[t + 1] * masks[t] \
+                - values[t]
+            running_gae = td_error \
+                + running_gae * gamma * gae_lambda * masks[t]
+            advantages[t] = running_gae
 
-        return td_errors, advantages
+        # Normalizing the advantages greatly improves the stability of the training process.
+        # Notice that when it's normalized, the value loss will always be 1,
+        # and the policy loss is always close to 0.(I don't know why)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        return advantages
     def update(
         self,
     ) -> None:
