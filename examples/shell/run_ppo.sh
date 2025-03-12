@@ -3,7 +3,7 @@
 python train.py \
   --env CartPole-v1 \
   --algo ppo \
-  --episodes 1000 \
+  --episodes 30 \
   --eval-interval 10 \
   --lr 3e-4 \
   --gamma 0.99 \

@@ -64,7 +64,7 @@ class RLTrainer:
         
     def train(
         self,
-        num_episodes: int,
+        num_episodes: int = 30,
         max_steps: int = 1000,
         eval_interval: int = 10,
         num_eval_episodes: int = 5,
@@ -73,7 +73,7 @@ class RLTrainer:
         """Train the agent.
         
         Args:
-            num_episodes: Number of training episodes
+            num_episodes: Number of training episodes (default: 30)
             max_steps: Maximum steps per episode
             eval_interval: Episodes between evaluations
             num_eval_episodes: Number of episodes for evaluation
@@ -96,6 +96,7 @@ class RLTrainer:
             trajectory = self.collector.collect_trajectory(max_steps, enable_grad=enable_grad)
             
             # Update agent
+            self.agent.train()
             metrics = self.agent.update(trajectory)
             
             # Log metrics

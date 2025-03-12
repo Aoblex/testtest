@@ -24,7 +24,7 @@ def parse_args():
                        help='RL algorithm to use')
     
     # Training
-    parser.add_argument('--episodes', type=int, default=1000,
+    parser.add_argument('--episodes', type=int, default=30,
                        help='Number of training episodes')
     parser.add_argument('--max-steps', type=int, default=1000,
                        help='Maximum steps per episode')
