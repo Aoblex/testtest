@@ -18,10 +18,10 @@ class TrajectoryCollector:
         self.agent = agent
         
     def collect_trajectory(self, max_steps: int = 1000, enable_grad: bool = False) -> Dict[str, Any]:
-        """Collect a single trajectory.
+        """Collect a single trajectory of exactly max_steps unless the environment has no more episodes.
         
         Args:
-            max_steps: Maximum number of steps to take
+            max_steps: Number of steps to collect
             enable_grad: Whether to enable gradient tracking during collection
             
         Returns:
@@ -32,23 +32,24 @@ class TrajectoryCollector:
                 next_states: List of next states
                 terminated: List of termination flags
                 truncated: List of truncation flags
+                masks: List of continuation masks (0 for episode end, 1 otherwise)
                 info: List of info dicts from environment
                 action_info: List of additional info from action selection
         """
-        state, info = self.env.reset()
-        terminated = False
-        truncated = False
-        
         states = []
         actions = []
         rewards = []
         next_states = []
         terminateds = []
         truncateds = []
+        masks = []
         infos = []
         action_infos = []
         
-        for _ in range(max_steps):
+        state, info = self.env.reset()
+        steps_taken = 0
+        
+        while steps_taken < max_steps:
             # Convert state to tensor
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             
@@ -71,10 +72,16 @@ class TrajectoryCollector:
             infos.append(info)
             action_infos.append(action_info)
             
-            state = next_state
+            # Add mask (0 if episode ended, 1 if continuing)
+            masks.append(0.0 if (terminated or truncated) else 1.0)
             
-            if terminated or truncated:
-                break
+            steps_taken += 1
+            
+            # Reset environment if episode ended and we need more steps
+            if (terminated or truncated) and steps_taken < max_steps:
+                state, info = self.env.reset()
+            else:
+                state = next_state
                 
         return {
             'states': torch.FloatTensor(np.array(states)),
@@ -83,6 +90,7 @@ class TrajectoryCollector:
             'next_states': torch.FloatTensor(np.array(next_states)),
             'terminated': terminateds,
             'truncated': truncateds,
+            'masks': torch.FloatTensor(masks),
             'infos': infos,
             'action_infos': list(zip(*action_infos))  # Unzip the action infos
         }
