@@ -7,8 +7,8 @@ from typing import List, Tuple, Dict, Any
 
 from .networks import ActorNetwork
 from .base import BaseAgent
-from utils.metrics import compute_returns
 from utils.transform import normalize
+from utils.collector import TrajectoryCollector
 
 class REINFORCE(BaseAgent):
     def __init__(
@@ -39,10 +39,13 @@ class REINFORCE(BaseAgent):
         return action.item(), log_prob
         
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        rewards = batch['rewards']
         log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
         
-        returns = compute_returns(rewards, self.gamma, device=self.device)
+        # Calculate returns using collector
+        returns = TrajectoryCollector.compute_returns(
+            batch,
+            gamma=self.gamma
+        ).to(self.device)
         returns = normalize(returns)
         
         policy_loss = []

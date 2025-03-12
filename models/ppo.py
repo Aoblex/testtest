@@ -7,8 +7,8 @@ from typing import List, Tuple, Dict, Any
 
 from .networks import ActorCriticNetwork
 from .base import BaseAgent
-from utils.metrics import compute_returns, compute_advantage
 from utils.transform import normalize
+from utils.collector import TrajectoryCollector
 
 class PPO(BaseAgent):
     def __init__(
@@ -49,18 +49,20 @@ class PPO(BaseAgent):
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         states = batch['states'].to(self.device)
         actions = batch['actions'].to(self.device)
-        rewards = batch['rewards']
-        # Unpack and move each tensor in the lists to device
         old_log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
-        values = [value.to(self.device) for value in batch['action_infos'][1]]
-        next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
-        # Calculate advantages using GAE
-        advantages = compute_advantage(rewards, values, next_value, self.gamma, 0.95)
+        # Calculate advantages and returns using collector
+        advantages = TrajectoryCollector.compute_advantages(
+            batch,
+            gamma=self.gamma,
+            gae_lambda=0.95
+        ).to(self.device)
         advantages = normalize(advantages)
         
-        # Calculate returns
-        returns = compute_returns(rewards, self.gamma, device=self.device)
+        returns = TrajectoryCollector.compute_returns(
+            batch,
+            gamma=self.gamma
+        ).to(self.device)
         
         total_policy_loss = 0
         total_value_loss = 0

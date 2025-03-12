@@ -7,8 +7,8 @@ from typing import List, Tuple, Dict, Any
 
 from .networks import ActorCriticNetwork
 from .base import BaseAgent
-from utils.metrics import compute_returns, compute_advantage
 from utils.transform import normalize
+from utils.collector import TrajectoryCollector
 
 class A2C(BaseAgent):
     def __init__(
@@ -45,15 +45,19 @@ class A2C(BaseAgent):
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         states = batch['states'].to(self.device)
         actions = batch['actions'].to(self.device)
-        rewards = batch['rewards']
         log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
-        values = [value.to(self.device) for value in batch['action_infos'][1]]
-        next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
-        # Calculate returns and advantages
-        returns = compute_returns(rewards, self.gamma, device=self.device)
-        advantages = compute_advantage(rewards, values, next_value, 
-                                    self.gamma, lambda_=0.95)
+        # Calculate returns and advantages using collector
+        returns = TrajectoryCollector.compute_returns(
+            batch,
+            gamma=self.gamma
+        ).to(self.device)
+        
+        advantages = TrajectoryCollector.compute_advantages(
+            batch,
+            gamma=self.gamma,
+            gae_lambda=0.95
+        ).to(self.device)
         advantages = normalize(advantages)
         
         # Forward pass
