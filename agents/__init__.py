@@ -269,8 +269,8 @@ class A2CAgent:
         self.buffer = ReplayBuffer()
 
         # Training parameters.
-        self.num_epochs = kwargs.pop("num_epochs", 4)
-        self.num_steps = kwargs.pop("num_steps", 1024)
+        self.num_epochs = kwargs.pop("num_epochs", 100)
+        self.num_steps = kwargs.pop("num_steps", 1000)
         self.gae_lambda = kwargs.pop("gae_lambda", 0.95) # GAE parameters.
         self.gamma = kwargs.pop("gamma", 0.99) # Return discount factor.
 
