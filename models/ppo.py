@@ -20,6 +20,7 @@ class PPO(BaseAgent):
         epsilon: float = 0.2,
         value_coef: float = 0.5,
         entropy_coef: float = 0.01,
+        num_epochs: int = 10,
         device: str = "cpu"
     ):
         self.lr = lr
@@ -27,6 +28,7 @@ class PPO(BaseAgent):
         self.epsilon = epsilon
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
+        self.num_epochs = num_epochs
         super().__init__(state_dim, action_dim, device)
         
     def init_networks(self) -> None:
@@ -45,12 +47,12 @@ class PPO(BaseAgent):
         return action.item(), log_prob, value
         
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        states = batch['states'].detach().to(self.device)
-        actions = batch['actions'].detach().to(self.device)
+        states = batch['states'].to(self.device)
+        actions = batch['actions'].to(self.device)
         rewards = batch['rewards']
         # Unpack and move each tensor in the lists to device
-        old_log_probs = [log_prob.detach().to(self.device) for log_prob in batch['action_infos'][0]]
-        values = [value.detach().to(self.device) for value in batch['action_infos'][1]]
+        old_log_probs = [log_prob.to(self.device) for log_prob in batch['action_infos'][0]]
+        values = [value.to(self.device) for value in batch['action_infos'][1]]
         next_value = values[-1] if not batch['terminated'][-1] else 0.0
         
         # Calculate advantages using GAE
@@ -65,7 +67,7 @@ class PPO(BaseAgent):
         total_entropy = 0
         
         # PPO epochs
-        for _ in range(10):
+        for epoch in range(self.num_epochs):
             logits, current_values = self.network(states)
             dist = Categorical(logits=logits)
             current_log_probs = dist.log_prob(actions)
@@ -86,16 +88,17 @@ class PPO(BaseAgent):
                    self.entropy_coef * entropy)
             
             self.optimizer.zero_grad()
-            loss.backward()
+            # Retain graph for all iterations except the last one
+            retain_graph = epoch < self.num_epochs - 1
+            loss.backward(retain_graph=retain_graph)
             self.optimizer.step()
             
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
             total_entropy += entropy.item()
             
-        num_epochs = 10
         return {
-            'policy_loss': total_policy_loss / num_epochs,
-            'value_loss': total_value_loss / num_epochs,
-            'entropy': total_entropy / num_epochs
+            'policy_loss': total_policy_loss / self.num_epochs,
+            'value_loss': total_value_loss / self.num_epochs,
+            'entropy': total_entropy / self.num_epochs
         } 

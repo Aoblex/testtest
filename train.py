@@ -50,6 +50,8 @@ def parse_args():
                        help='Entropy loss coefficient (for A2C/PPO)')
     parser.add_argument('--epsilon', type=float, default=0.2,
                        help='PPO clip parameter')
+    parser.add_argument('--num-epochs', type=int, default=10,
+                       help='Number of PPO epochs per update')
     parser.add_argument('--tau', type=float, default=0.005,
                        help='DDPG soft update parameter')
     
@@ -83,7 +85,10 @@ def get_agent_kwargs(args, algo: str):
         })
         
     if algo == 'ppo':
-        base_kwargs['epsilon'] = args.epsilon
+        base_kwargs.update({
+            'epsilon': args.epsilon,
+            'num_epochs': args.num_epochs
+        })
         
     if algo == 'ddpg':
         # Test environment for continuous action space
