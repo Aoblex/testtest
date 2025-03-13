@@ -1,6 +1,9 @@
 import torch
 import numpy as np
-from gym.spaces import Box, Discrete, MultiDiscrete, MultiBinary
+from gymnasium.spaces.box import Box
+from gymnasium.spaces.discrete import Discrete
+from gymnasium.spaces.multi_discrete import MultiDiscrete
+from gymnasium.spaces.multi_binary import MultiBinary
 
 import torch.nn as nn
 
