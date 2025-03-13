@@ -80,34 +80,34 @@ class BaseAgent:
         Returns:
             buffer: The replay buffer containing the rollout.
         """
-        state, info = self.env.reset()
+        observation, info = self.env.reset()
 
         for _ in range(num_steps):
             action, action_info = self.model.select_action(
-                state,
+                observation,
                 requires_grad=requires_grad
             )
 
             if isinstance(action, torch.Tensor):
                 action = action.cpu().numpy()
 
-            next_state, reward, terminated, truncated, info = self.env.step(action)
+            next_observation, reward, terminated, truncated, info = self.env.step(action)
 
             self.buffer.push(
-                next_state,
+                next_observation,
                 reward,
                 terminated,
                 truncated,
                 info,
-                state,
+                observation,
                 action,
                 action_info
             )
 
             if terminated or truncated:
-                state, info = self.env.reset()
+                observation, info = self.env.reset()
             else:
-                state = next_state
+                observation = next_observation
  
         return self.buffer
 
