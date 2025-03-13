@@ -17,8 +17,8 @@ class PPOAgent(BaseAgent):
 
         # Configure the model.
         self.model = PPO(
-            state_dim=self.observation_space.shape[0],
-            action_dim=self.action_space.n,
+            observation_space=self.observation_space,
+            action_space=self.action_space,
             **kwargs,
         ).to(self.device)
 
@@ -64,9 +64,9 @@ class PPOAgent(BaseAgent):
             b_indices = shuffled_indices[start:end]
 
             # ob means old batch.
-            ob_states = torch.tensor(
+            ob_observations = torch.tensor(
                 np.array([
-                    self.buffer.get_state_list()[i] for i in b_indices
+                    self.buffer.get_observation_list()[i] for i in b_indices
                 ]),
                 dtype=torch.float32
             ).to(self.device)
@@ -87,7 +87,7 @@ class PPOAgent(BaseAgent):
             
             # Compute the logits, values and entropies of current policy.
             _, nb_action_info = self.model.select_action(
-                state=ob_states,
+                observation=ob_observations,
                 action=ob_actions,
                 requires_grad=True,
             )

@@ -16,14 +16,18 @@ class REINFORCEAgent(BaseAgent):
 
         # Configure the model.
         self.model = REINFORCE(
-            state_dim=self.observation_space.shape[0],
-            action_dim=self.action_space.n,
+            observation_space=self.observation_space,
+            action_space=self.action_space,
             **kwargs,
         ).to(self.device)
 
-        # Parameters for training.
+        # Parameters for loss functions.
         self.gamma = kwargs.pop("gamma", 0.99)
         self.normalize = kwargs.pop("normalize", True)
+
+        # Parameters for training.
+        self.num_epochs = kwargs.pop("num_epochs", 100)
+        self.num_steps = kwargs.pop("num_steps", 100)
 
         # Configure the saving options and the optimizer.
         self._set_model_settings()
