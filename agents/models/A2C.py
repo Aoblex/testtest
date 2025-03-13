@@ -109,7 +109,9 @@ class A2C(BaseModel):
             observation = torch.from_numpy(observation).float().to(self.device)
         else:
             observation = observation.to(self.device)
-        observation = observation.reshape(-1)
+        
+        if len(observation.shape) > len(self.observation_space.shape): # The input is batched
+            observation = observation.reshape(observation.shape[0], -1)
 
         with torch.set_grad_enabled(requires_grad):
 
