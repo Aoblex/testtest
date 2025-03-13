@@ -17,8 +17,8 @@ class A2CAgent(BaseAgent):
         
         # Configure the model.
         self.model = A2C(
-            state_dim=self.observation_space.shape[0],
-            action_dim=self.action_space.n,
+            observation_space=self.observation_space,
+            action_space=self.action_space,
             **kwargs,
         ).to(self.device)
 
@@ -62,6 +62,8 @@ class A2CAgent(BaseAgent):
         # Update the model.
         self.optimizer.zero_grad()
         total_loss.backward()
+        # Clip gradients. This is really necessary for Box action space.
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         # Return the policy loss and value loss.
