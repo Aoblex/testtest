@@ -72,7 +72,7 @@ class A2C(BaseModel):
         """Forward pass through the network.
         
         Args:
-            state: State tensor of shape (batch_size, state_dim)
+            observation: Observation tensor of shape (batch_size, observation_dim)
             
         Returns:
             action_logits: Action logits of shape (batch_size, action_dim)
