@@ -22,10 +22,9 @@ class A2C(BaseModel):
 
             kwargs:
                 hidden_dim: Hidden dimension of networks
-                lr: Learning rate
                 device: Device to run on
         """
-        super().__init__(state_dim,action_dim)
+        super().__init__(state_dim, action_dim, **kwargs)
         
         # Networks
         hidden_dim = kwargs.pop("hidden_dim", 256)
@@ -77,7 +76,9 @@ class A2C(BaseModel):
             info: Dictionary containing log_prob and value
         """
         if isinstance(state, np.ndarray):
-            state = torch.from_numpy(state).float()
+            state = torch.from_numpy(state).float().to(self.device)
+        else:
+            state = state.to(self.device)
 
         with torch.set_grad_enabled(requires_grad):
             logits, value = self(state)
