@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["stock_trading_env"]
+
+[project]
+name = "stock_trading_env"
+version = "0.0.1"
+dependencies = [
+  "gymnasium",
+  "pygame>=2.1.3",
+  "pre-commit",
+]
