@@ -1,1 +1,1 @@
-from stock_trading_env.envs.grid_world import GridWorldEnv
+from stock_trading_env.envs.stock_trading_env import StockTradingEnv
