@@ -3,7 +3,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import pygame
 import numpy as np
-
+import pandas as pd
 
 class Actions(Enum):
     right = 0
@@ -12,10 +12,23 @@ class Actions(Enum):
     down = 3
 
 
-class StockTradingEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
+class StockPortfolioEnv(gym.Env):
+    metadata = {
+        "render_modes": [None],
+    }
 
-    def __init__(self, render_mode=None, size=5):
+    def __init__(
+        self,
+        stock_data: pd.core.frame.DataFrame,
+        signal_features: list,
+        window_size: int,
+        num_tickers: int,
+    ):
+        self.stock_data = stock_data
+        self.signal_features = signal_features
+        self.window_size = window_size
+        self.num_tickers = num_tickers
+
         self.size = size  # The size of the square grid
         self.window_size = 512  # The size of the PyGame window
 
