@@ -1,15 +1,7 @@
-from enum import Enum
 import gymnasium as gym
 from gymnasium import spaces
-import pygame
 import numpy as np
 import pandas as pd
-
-class Actions(Enum):
-    right = 0
-    up = 1
-    left = 2
-    down = 3
 
 
 class StockPortfolioEnv(gym.Env):
@@ -19,102 +11,208 @@ class StockPortfolioEnv(gym.Env):
 
     def __init__(
         self,
-        stock_data: pd.core.frame.DataFrame,
-        signal_features: list,
+        stock_data: pd.core.frame.DataFrame | str,
         window_size: int,
-        num_tickers: int,
+        initial_money: float,
+        transaction_cost_percentage: float,
+        render_mode: str | None = None,
     ):
-        self.stock_data = stock_data
-        self.signal_features = signal_features
+        if isinstance(stock_data, pd.core.frame.DataFrame):
+            self.stock_data = stock_data
+        elif isinstance(stock_data, str):
+            if stock_data.endswith(".pkl"):
+                self.stock_data = pd.read_pickle(stock_data)
+            elif stock_data.endswith(".csv"):
+                self.stock_data = pd.read_csv(stock_data)
+            else:
+                raise TypeError(f"Unsupported file extension: {stock_data}")
+        else:
+            raise TypeError(f"Unsupported stock data type: {type(stock_data)}")
+
+        # Check the stock data
+        assert isinstance(self.stock_data, pd.core.frame.DataFrame), \
+               f"The stock data must be a pandas DataFrame, but got {type(self.stock_data)}"
+        
+        assert "date" in self.stock_data.columns, \
+               "The stock data must contain the 'date' column"
+
+        assert "ticker" in self.stock_data.columns, \
+               "The stock data must contain the 'ticker' column"
+        
+        assert "close" in self.stock_data.columns, \
+               "The stock data must contain the 'close' column"
+
+        # WARNING: the date and tickers must be sorted
+        self.stock_data.sort_values(by=["date", "ticker"], inplace=True)
+        self.stock_data.reset_index(drop=True, inplace=True)
+        self.stock_data.index, _ = self.stock_data["date"].factorize()
+        self.stock_data.drop(columns=["date"], inplace=True)
+
+        self.signal_feature_names = self.stock_data.columns.to_list()
+        self.num_features = len(self.signal_feature_names)
+        self.ticker_list = self.stock_data["ticker"].unique().tolist()
+        self.num_tickers = len(self.ticker_list)
+        self.num_days = len(self.stock_data)
         self.window_size = window_size
-        self.num_tickers = num_tickers
+        self.initial_money = initial_money
+        self.transaction_cost_percentage = transaction_cost_percentage
+        self.last_day = len(self.stock_data) - 1
 
-        self.size = size  # The size of the square grid
-        self.window_size = 512  # The size of the PyGame window
 
-        # Observations are dictionaries with the agent's and the target's location.
-        # Each location is encoded as an element of {0, ..., `size`}^2,
-        # i.e. MultiDiscrete([size, size]).
-        self.observation_space = spaces.Dict(
-            {
-                "agent": spaces.Box(0, size - 1, shape=(2,), dtype=int),
-                "target": spaces.Box(0, size - 1, shape=(2,), dtype=int),
-            }
+        # Current information
+        self._position_status = None
+        self._close_prices = None
+        self._today = None
+        self._total_asset = None
+        self.date_buffer = [] # record days
+        self.total_asset_buffer = [] # record asset changes
+
+        # The observation space consists of:
+        # 1. The signal features of the past `window_size` days
+        # 2. The position status of today
+        self.observation_space = spaces.Box(
+            low = -np.inf,
+            high = np.inf,
+            shape = (1 + self.num_features + self.num_tickers, self.num_tickers),
+            dtype = np.float32,
         )
 
-        # We have 4 actions, corresponding to "right", "up", "left", "down", "right"
-        self.action_space = spaces.Discrete(4)
-
-        """
-        The following dictionary maps abstract actions from `self.action_space` to 
-        the direction we will walk in if that action is taken.
-        i.e. 0 corresponds to "right", 1 to "up" etc.
-        """
-        self._action_to_direction = {
-            Actions.right.value: np.array([1, 0]),
-            Actions.up.value: np.array([0, 1]),
-            Actions.left.value: np.array([-1, 0]),
-            Actions.down.value: np.array([0, -1]),
-        }
+        # Notice that we use logits for the action space,
+        # the real stock position is the softmax of the action
+        self.action_space = spaces.Box(
+            low=0,
+            high=1.0,
+            shape=(self.num_tickers,),
+            dtype=np.float32,
+        )
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
 
-        """
-        If human-rendering is used, `self.window` will be a reference
-        to the window that we draw to. `self.clock` will be a clock that is used
-        to ensure that the environment is rendered at the correct framerate in
-        human-mode. They will remain `None` until human-mode is used for the
-        first time.
-        """
-        self.window = None
-        self.clock = None
+    def _get_softmax_action(
+        self,
+        action: np.ndarray,
+    ) -> np.ndarray:
+        """Convert the action to a softmax action"""
+        return np.exp(action) / np.sum(np.exp(action))
+    
+    def _get_close_prices(
+        self,
+        day: int,
+    ) -> np.ndarray:
+        """Get the close prices"""
+        return self.stock_data.loc[day, "close"].to_numpy()
 
-    def _get_obs(self):
-        return {"agent": self._agent_location, "target": self._target_location}
+    def _get_observation(self):
+        """Get the observation"""
 
-    def _get_info(self):
+        # Fuck the observation....
+        observation = np.zeros((1 + self.num_features + self.num_tickers, self.num_tickers))
+        data_lookback = self.stock_data.loc[self._today - self.window_size:self._today, :]
+        data_lookback.reset_index(drop=False, inplace=True, names=["date"])
+        price_lookback = data_lookback.pivot_table(index="date", columns="ticker", values="close")
+        return_lookback = price_lookback.pct_change(periods=1).dropna()
+        covariance_matrix = return_lookback.cov().to_numpy()
+
+        observation[0, :] = self._position_status
+        observation[1:self.num_features + 1, :] = np.concat([
+            self.stock_data.loc[self._today][self.stock_data["ticker"] == ticker].to_numpy()
+            for ticker in self.ticker_list
+        ])
+        observation[self.num_features + 1:, :] = covariance_matrix
+        return observation
+    
+    def _get_information(self):
+        """Get the information"""
         return {
-            "distance": np.linalg.norm(
-                self._agent_location - self._target_location, ord=1
-            )
+            "total_asset": self._total_asset,
         }
+    
+    def _is_terminated(self) -> bool:
+        """Check if the episode is terminated"""
+        return self._today >= self.last_day
 
     def reset(self, seed=None, options=None):
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
 
-        # Choose the agent's location uniformly at random
-        self._agent_location = self.np_random.integers(0, self.size, size=2, dtype=int)
+        """Set the related information"""
 
-        # We will sample the target's location randomly until it does not
-        # coincide with the agent's location
-        self._target_location = self._agent_location
-        while np.array_equal(self._target_location, self._agent_location):
-            self._target_location = self.np_random.integers(
-                0, self.size, size=2, dtype=int
-            )
+        # today is the index of the current day
+        self._today = self.window_size
 
-        observation = self._get_obs()
-        info = self._get_info()
+        # the position status always sum up to 1
+        self._position_status = np.ones(self.num_tickers) / self.num_tickers
 
-        if self.render_mode == "human":
-            self._render_frame()
+        # close prices is of shape (window_size,)
+        self._close_prices = self._get_close_prices(self._today)
+
+        # total asset is the initial money minus the initial transaction cost
+        self._total_asset = self.initial_money \
+                          - self.transaction_cost_percentage * self.initial_money
+
+        # record trading information
+        self.date_buffer.append(self._today)
+        self.total_asset_buffer.append(self._total_asset)
+
+        observation = self._get_observation()
+        info = self._get_information()
 
         return observation, info
 
-    def step(self, action):
-        # Map the action (element of {0,1,2,3}) to the direction we walk in
-        direction = self._action_to_direction[action]
-        # We use `np.clip` to make sure we don't leave the grid
-        self._agent_location = np.clip(
-            self._agent_location + direction, 0, self.size - 1
-        )
-        # An episode is done iff the agent has reached the target
-        terminated = np.array_equal(self._agent_location, self._target_location)
-        reward = 1 if terminated else 0  # Binary sparse rewards
-        observation = self._get_obs()
-        info = self._get_info()
+    def _get_position_status(
+        self,
+        action: np.ndarray,
+    ) -> np.ndarray:
+        """Get the position status according to the action"""
+        return self._get_softmax_action(action)
+
+    def step(
+        self,
+        action: np.ndarray,
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Take a step in the environment
+
+        Args:
+            action (np.ndarray): The action to take
+
+        Returns:
+            tuple: The observation, reward, terminated, truncated, info
+        """
+
+        # get the new position status
+        new_position_status = self._get_position_status(action)
+
+        # get the transaction cost according to the new position status
+        # the prices are the close prices of today
+        position_diff = new_position_status - self._position_status
+        total_trade_amount = self._close_prices * position_diff
+        transaction_cost = self.transaction_cost_percentage * total_trade_amount
+
+        # get close prices of next day
+        new_close_prices = self._get_close_prices(self._today + 1)
+
+        # calculate new total asset, the prices are the close prices of next day
+        new_total_asset = new_close_prices * new_position_status - transaction_cost
+
+        # calculate the reward
+        reward = new_total_asset - self._total_asset
+
+        # step to next day
+        self._today += 1
+
+        # update information
+        self._position_status = new_position_status
+        self._close_prices = new_close_prices
+        self._total_asset = new_total_asset
+
+        observation = self._get_observation()
+        info = self._get_information()
+        terminated = self._is_terminated()
+
+        # record information
+        self.date_buffer.append(self._today)
+        self.total_asset_buffer.append(self._total_asset)
 
         if self.render_mode == "human":
             self._render_frame()
@@ -126,69 +224,4 @@ class StockPortfolioEnv(gym.Env):
             return self._render_frame()
 
     def _render_frame(self):
-        if self.window is None and self.render_mode == "human":
-            pygame.init()
-            pygame.display.init()
-            self.window = pygame.display.set_mode((self.window_size, self.window_size))
-        if self.clock is None and self.render_mode == "human":
-            self.clock = pygame.time.Clock()
-
-        canvas = pygame.Surface((self.window_size, self.window_size))
-        canvas.fill((255, 255, 255))
-        pix_square_size = (
-            self.window_size / self.size
-        )  # The size of a single grid square in pixels
-
-        # First we draw the target
-        pygame.draw.rect(
-            canvas,
-            (255, 0, 0),
-            pygame.Rect(
-                pix_square_size * self._target_location,
-                (pix_square_size, pix_square_size),
-            ),
-        )
-        # Now we draw the agent
-        pygame.draw.circle(
-            canvas,
-            (0, 0, 255),
-            (self._agent_location + 0.5) * pix_square_size,
-            pix_square_size / 3,
-        )
-
-        # Finally, add some gridlines
-        for x in range(self.size + 1):
-            pygame.draw.line(
-                canvas,
-                0,
-                (0, pix_square_size * x),
-                (self.window_size, pix_square_size * x),
-                width=3,
-            )
-            pygame.draw.line(
-                canvas,
-                0,
-                (pix_square_size * x, 0),
-                (pix_square_size * x, self.window_size),
-                width=3,
-            )
-
-        if self.render_mode == "human":
-            # The following line copies our drawings from `canvas` to the visible window
-            self.window.blit(canvas, canvas.get_rect())
-            pygame.event.pump()
-            pygame.display.update()
-
-            # We need to ensure that human-rendering occurs at the predefined framerate.
-            # The following line will automatically add a delay to
-            # keep the framerate stable.
-            self.clock.tick(self.metadata["render_fps"])
-        else:  # rgb_array
-            return np.transpose(
-                np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
-            )
-
-    def close(self):
-        if self.window is not None:
-            pygame.display.quit()
-            pygame.quit()
+        raise NotImplementedError("render is not implemented")
