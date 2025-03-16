@@ -1,0 +1,435 @@
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.utils import seeding
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import os
+import hashlib
+
+class MultiStockEnvTrain(gym.Env):
+    """A multi-stock trading environment for OpenAI gym"""
+    metadata = {'render_modes': ['human']}
+
+    def __init__(
+        self,
+        start: str,
+        end: str,
+        tickers: list[str] | None = None,
+        initial_balance: float = 1000000,
+        transaction_fee_percent: float = 0.001,
+        reward_scaling: float = 1.0,
+        max_shares_norm: int = 100,
+        cache_dir: str = "ticker_data",
+        proxy: str | None = None
+    ):
+        """
+        Initialize the stock trading environment
+        
+        Parameters:
+        - start: start date in format YYYY-MM-DD
+        - end: end date in format YYYY-MM-DD
+        - tickers: list of ticker symbols
+        - initial_balance: starting cash balance
+        - transaction_fee_percent: cost of trade as a percentage
+        - reward_scaling: scaling factor for rewards
+        - max_shares_norm: normalization factor for maximum shares per trade
+        - cache_dir: directory to store cached data
+        - proxy: proxy server for downloading data (e.g., "http://10.10.1.10:1080")
+        """
+        super(MultiStockEnvTrain, self).__init__()
+        
+        # Default tickers if none provided
+        if tickers is None:
+            tickers = ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META']
+        
+        self.start_date = start
+        self.end_date = end
+        self.tickers = tickers
+        self.stock_dim = len(tickers)
+        self.cache_dir = cache_dir
+        self.proxy = proxy
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # Constants
+        self.initial_balance = initial_balance
+        self.transaction_fee_percent = transaction_fee_percent
+        self.reward_scaling = reward_scaling
+        self.max_shares_norm = max_shares_norm
+        
+        # Download and process data
+        self.data = self._load_or_download_data()
+        self.dates = self._get_common_dates()
+        self.day = 0
+        
+        # Action space: continuous values between -1 and 1 for each stock
+        # -1 = sell max, 0 = hold, 1 = buy max
+        self.action_space = spaces.Box(
+            low=-1, high=1, shape=(self.stock_dim,), dtype=np.float32
+        )
+        
+        # Observation space includes:
+        # - Account balance (1)
+        # - Stock prices (stock_dim)
+        # - Owned shares (stock_dim)
+        # - MACD values (stock_dim)
+        # - RSI values (stock_dim)
+        # Total dimension = 1 + 4*stock_dim
+        state_dim = 1 + 4 * self.stock_dim
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
+        )
+        
+        # Initialize state
+        self.terminal = False
+        self.portfolio_value = self.initial_balance
+        self.balance = self.initial_balance
+        self.shares = np.zeros(self.stock_dim)
+        self.state = self._get_observation()
+        
+        # Initialize memory for tracking performance
+        self.asset_memory = [self.initial_balance]
+        self.rewards_memory = []
+        self.actions_memory = []
+        self.trades = 0
+        self.cost = 0
+        
+        # Dictionary to store results
+        self.results = {}
+        
+        # Seed random number generator
+        self._seed()
+
+    def _get_cache_filename(self, ticker):
+        """Generate a unique cache filename based on parameters"""
+        # Create a hash of the parameters to ensure uniqueness
+        param_str = f"{ticker}_{self.start_date}_{self.end_date}"
+        filename = f"{ticker}_{hashlib.md5(param_str.encode()).hexdigest()[:10]}.csv"
+        return os.path.join(self.cache_dir, filename)
+
+    def _load_or_download_data(self):
+        """Load data from cache or download if not available"""
+        data_dict = {}
+        
+        for ticker in self.tickers:
+            cache_file = self._get_cache_filename(ticker)
+            
+            # Check if cache file exists
+            if os.path.exists(cache_file):
+                print(f"Loading cached data for {ticker}...")
+                ticker_data = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                ticker_data.sort_index(inplace=True)
+                print(f"Loaded cached data for {ticker}.")
+            else:
+                print(f"Downloading data for {ticker}...")
+                # Download data for this ticker
+                ticker_data = self._download_and_process_ticker(ticker)
+                # Save to cache
+                ticker_data.to_csv(cache_file)
+                print(f"Saved data for {ticker} to cache.")
+            
+            data_dict[ticker] = ticker_data
+        
+        if not data_dict:
+            raise ValueError("Could not load data for any tickers. Please check your date range and ticker symbols.")
+        
+        return data_dict
+
+    def _download_and_process_ticker(self, ticker):
+        """Download and process data for a single ticker"""
+        # Download data (always using daily interval "1d")
+        # Use yf.Ticker.history() to download data, it's columns have only one level
+        yf_ticker = yf.Ticker(ticker, proxy=self.proxy)
+        ticker_data = yf_ticker.history(
+            start=self.start_date, 
+            end=self.end_date, 
+            interval="1d",
+            proxy=self.proxy,
+            auto_adjust=False,
+        )
+        
+        # Check if data was actually downloaded
+        if ticker_data.empty:
+            raise ValueError(f"No data found for ticker {ticker} in date range {self.start_date} to {self.end_date}")
+        
+        return self._process_ticker_data(ticker_data)
+
+    def _process_ticker_data(self, ticker_data):
+        """Process raw ticker data to include technical indicators"""
+        # MACD
+        exp1 = ticker_data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = ticker_data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        
+        # RSI
+        delta = ticker_data['Close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        # Handle division by zero
+        avg_loss = avg_loss.replace(0, 0.001)
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        # Create a dataframe with the processed data
+        processed_df = pd.DataFrame({
+            'adjcp': ticker_data['Adj Close'],
+            'open': ticker_data['Open'],
+            'high': ticker_data['High'],
+            'low': ticker_data['Low'],
+            'volume': ticker_data['Volume'],
+            'macd': macd,
+            'rsi': rsi
+        })
+        
+        # Handle NaN values
+        processed_df.ffill(inplace=True)
+        processed_df.bfill(inplace=True)
+
+        # Check if there are any NaN values
+        if processed_df.isna().sum().sum() > 0:
+            raise ValueError("NaN values found in processed data")
+        
+        return processed_df
+
+    def _get_common_dates(self):
+        """Get common dates across all ticker data"""
+        # Extract all dates from all tickers
+        all_dates = set()
+        for ticker, df in self.data.items():
+            all_dates.update(df.index)
+        
+        # Get the intersection of dates across all tickers
+        common_dates = set.intersection(*[set(df.index) for df in self.data.values()])
+        
+        # If no common dates, raise an error
+        if not common_dates:
+            raise ValueError("No common trading dates found across all tickers!")
+        
+        # Sort the dates
+        return sorted(list(common_dates))
+
+    def _get_observation(self):
+        """Get current state observation"""
+        # Get the current date
+        current_date = self.dates[self.day]
+        
+        # Initialize state with balance
+        state = [self.balance]
+        
+        # Add all stock prices
+        prices = []
+        for ticker in self.tickers:
+            if current_date in self.data[ticker].index:
+                prices.append(self.data[ticker].loc[current_date, 'adjcp'])
+            else:
+                # Use previous value if data is missing for this date
+                prices.append(0)
+        state.extend(prices)
+        
+        # Add owned shares
+        state.extend(self.shares)
+        
+        # Add MACD values
+        macd_values = []
+        for ticker in self.tickers:
+            if current_date in self.data[ticker].index:
+                macd_values.append(self.data[ticker].loc[current_date, 'macd'])
+            else:
+                macd_values.append(0)
+        state.extend(macd_values)
+        
+        # Add RSI values
+        rsi_values = []
+        for ticker in self.tickers:
+            if current_date in self.data[ticker].index:
+                rsi_values.append(self.data[ticker].loc[current_date, 'rsi'])
+            else:
+                rsi_values.append(0)
+        state.extend(rsi_values)
+        
+        return np.array(state, dtype=np.float32)
+
+    def _sell_stock(self, index, action):
+        """Sell stocks based on the action"""
+        ticker = self.tickers[index]
+        current_date = self.dates[self.day]
+        
+        # Get current price
+        if current_date in self.data[ticker].index:
+            current_price = self.data[ticker].loc[current_date, 'adjcp']
+        else:
+            # Skip if no data for this date
+            return
+        
+        # Calculate shares to sell (action is between -1 and 0)
+        # Negative action means sell, so take absolute value
+        shares_to_sell = min(abs(action) * self.max_shares_norm, self.shares[index])
+        
+        if shares_to_sell > 0:
+            # Update balance with sale proceeds minus transaction fee
+            self.balance += current_price * shares_to_sell * (1 - self.transaction_fee_percent)
+            
+            # Update owned shares
+            self.shares[index] -= shares_to_sell
+            
+            # Track costs and trades
+            self.cost += current_price * shares_to_sell * self.transaction_fee_percent
+            self.trades += 1
+
+    def _buy_stock(self, index, action):
+        """Buy stocks based on the action"""
+        ticker = self.tickers[index]
+        current_date = self.dates[self.day]
+        
+        # Get current price
+        if current_date in self.data[ticker].index:
+            current_price = self.data[ticker].loc[current_date, 'adjcp']
+        else:
+            # Skip if no data for this date
+            return
+        
+        # Calculate maximum shares we can buy with current balance
+        max_possible_shares = self.balance // (current_price * (1 + self.transaction_fee_percent))
+        
+        # Calculate shares to buy (action is between 0 and 1)
+        shares_to_buy = min(action * self.max_shares_norm, max_possible_shares)
+        
+        if shares_to_buy > 0:
+            # Update balance
+            self.balance -= current_price * shares_to_buy * (1 + self.transaction_fee_percent)
+            
+            # Update owned shares
+            self.shares[index] += shares_to_buy
+            
+            # Track costs and trades
+            self.cost += current_price * shares_to_buy * self.transaction_fee_percent
+            self.trades += 1
+
+    def _calculate_portfolio_value(self):
+        """Calculate current portfolio value (cash + stock holdings)"""
+        current_date = self.dates[self.day]
+        portfolio_value = self.balance
+        
+        for i, ticker in enumerate(self.tickers):
+            if current_date in self.data[ticker].index:
+                portfolio_value += self.shares[i] * self.data[ticker].loc[current_date, 'adjcp']
+        
+        return portfolio_value
+
+    def step(self, actions):
+        """
+        Take an action in the environment
+        
+        Parameters:
+        - actions: numpy array of actions for each stock (values between -1 and 1)
+        
+        Returns:
+        - observation: current state
+        - reward: reward for the action
+        - terminated: whether the episode is done
+        - truncated: whether the episode was truncated
+        - info: additional information
+        """
+        # Check if episode is over
+        self.terminal = self.day >= len(self.dates) - 1
+        
+        if self.terminal:
+            # Calculate final portfolio value
+            end_portfolio_value = self._calculate_portfolio_value()
+            
+            # Save results to CSV
+            df_total_value = pd.DataFrame(self.asset_memory, columns=['portfolio_value'])
+            df_total_value['daily_return'] = df_total_value['portfolio_value'].pct_change(1)
+            if df_total_value['daily_return'].std() != 0:
+                sharpe = (252**0.5) * df_total_value['daily_return'].mean() / df_total_value['daily_return'].std()
+            else:
+                sharpe = 0
+            
+            # Store results in dictionary
+            self.results = {
+                "initial_balance": self.initial_balance,
+                "final_portfolio_value": end_portfolio_value,
+                "total_return": end_portfolio_value - self.initial_balance,
+                "total_transaction_cost": self.cost,
+                "total_trades": self.trades,
+                "sharpe_ratio": sharpe,
+                "portfolio_values": self.asset_memory,
+                "rewards": self.rewards_memory,
+                "actions": self.actions_memory,
+            }
+
+            # Return terminal state
+            return self.state, self.reward, self.terminal, False, {}
+        
+        # Process the actions
+        actions = np.clip(actions, -1, 1)  # Ensure actions are in range
+        
+        # Calculate portfolio value before action
+        begin_portfolio_value = self._calculate_portfolio_value()
+        
+        # Process sell actions first (negative values in actions)
+        sell_indices = np.where(actions < 0)[0]
+        for index in sell_indices:
+            self._sell_stock(index, actions[index])
+        
+        # Then process buy actions (positive values in actions)
+        buy_indices = np.where(actions > 0)[0]
+        for index in buy_indices:
+            self._buy_stock(index, actions[index])
+        
+        # Move to the next day
+        self.day += 1
+        
+        # Update state
+        self.state = self._get_observation()
+        
+        # Calculate portfolio value after action
+        end_portfolio_value = self._calculate_portfolio_value()
+        
+        # Calculate reward as change in portfolio value
+        self.reward = end_portfolio_value - begin_portfolio_value
+        
+        # Apply reward scaling
+        self.reward = self.reward * self.reward_scaling
+        
+        # Save portfolio value and reward
+        self.asset_memory.append(end_portfolio_value)
+        self.rewards_memory.append(self.reward)
+        self.actions_memory.append(actions)
+        
+        return self.state, self.reward, self.terminal, False, {}
+    
+    def reset(self, seed=None, options=None):
+        """Reset the environment for a new episode"""
+        # Reset day counter
+        self.day = 0
+        
+        # Reset balance and shares
+        self.balance = self.initial_balance
+        self.shares = np.zeros(self.stock_dim)
+        
+        # Reset tracking variables
+        self.asset_memory = [self.initial_balance]
+        self.rewards_memory = []
+        self.actions_memory = []
+        self.trades = 0
+        self.cost = 0
+        self.terminal = False
+        
+        # Get initial state
+        self.state = self._get_observation()
+        
+        return self.state, {}
+    
+    def render(self, mode='human'):
+        """Render the environment"""
+        return self.state
+    
+    def _seed(self, seed=None):
+        """Seed the random number generator"""
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
