@@ -9,7 +9,7 @@ import hashlib
 
 class MultiStockEnvTrain(gym.Env):
     """A multi-stock trading environment for OpenAI gym"""
-    metadata = {'render_modes': ['human']}
+    metadata = {'render_modes': [None, 'human', 'rgb_array']}
 
     def __init__(
         self,
@@ -21,7 +21,8 @@ class MultiStockEnvTrain(gym.Env):
         reward_scaling: float = 1.0,
         max_shares_norm: int = 100,
         cache_dir: str = "ticker_data",
-        proxy: str | None = None
+        proxy: str | None = None,
+        render_mode: str | None = None,
     ):
         """
         Initialize the stock trading environment
@@ -38,6 +39,9 @@ class MultiStockEnvTrain(gym.Env):
         - proxy: proxy server for downloading data (e.g., "http://10.10.1.10:1080")
         """
         super(MultiStockEnvTrain, self).__init__()
+
+        assert render_mode is None or render_mode in self.metadata["render_modes"]
+        self.render_mode = render_mode
         
         # Default tickers if none provided
         if tickers is None:
