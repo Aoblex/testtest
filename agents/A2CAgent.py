@@ -10,10 +10,11 @@ class A2CAgent(BaseAgent):
     def __init__(
         self,
         env_id: str | gym.envs.registration.EnvSpec,
+        env_kwargs: dict = {},
         **kwargs,
     ) -> None:
         """Initialize the A2C agent."""
-        super().__init__(env_id, **kwargs)
+        super().__init__(env_id, env_kwargs, **kwargs)
         
         # Configure the model.
         self.model = A2C(

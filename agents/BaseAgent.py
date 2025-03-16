@@ -14,6 +14,7 @@ class BaseAgent:
     def __init__(
         self,
         env_id: str | gym.envs.registration.EnvSpec,
+        env_kwargs: dict = {},
         **kwargs,
     ) -> None:
         """Initialize the base agent.
@@ -28,7 +29,7 @@ class BaseAgent:
         """
 
         # Configure the environment.
-        self.env = gym.make(env_id)
+        self.env = gym.make(env_id, **env_kwargs)
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
 
