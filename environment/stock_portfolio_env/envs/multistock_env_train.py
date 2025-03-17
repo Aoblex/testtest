@@ -110,7 +110,7 @@ class MultiStockEnvTrain(gym.Env):
         """Generate a unique cache filename based on parameters"""
         # Create a hash of the parameters to ensure uniqueness
         param_str = f"{ticker}_{self.start_date}_{self.end_date}"
-        filename = f"{ticker}_{hashlib.md5(param_str.encode()).hexdigest()[:10]}.csv"
+        filename = f"{param_str}.csv"
         return os.path.join(self.cache_dir, filename)
 
     def _load_or_download_data(self):
@@ -122,17 +122,13 @@ class MultiStockEnvTrain(gym.Env):
             
             # Check if cache file exists
             if os.path.exists(cache_file):
-                print(f"Loading cached data for {ticker}...")
                 ticker_data = pd.read_csv(cache_file, index_col=0, parse_dates=True)
                 ticker_data.sort_index(inplace=True)
-                print(f"Loaded cached data for {ticker}.")
             else:
-                print(f"Downloading data for {ticker}...")
                 # Download data for this ticker
                 ticker_data = self._download_and_process_ticker(ticker)
                 # Save to cache
                 ticker_data.to_csv(cache_file)
-                print(f"Saved data for {ticker} to cache.")
             
             data_dict[ticker] = ticker_data
         
