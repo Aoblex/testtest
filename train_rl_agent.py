@@ -6,12 +6,6 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import stock_portfolio_env
 
-# Base directories
-SAVES_DIR = "saves"
-AGENT_SAVES_DIR = os.path.join(SAVES_DIR, "agents")
-PLOT_SAVES_DIR = os.path.join(SAVES_DIR, "plots")
-DATA_CACHE_DIR = os.path.join(SAVES_DIR, "data")
-
 # Map algorithm names to their classes
 ALGORITHMS = {
     "a2c": A2C,
@@ -67,7 +61,7 @@ def train_algorithm(algorithm, args):
     print(f"{'='*50}")
     
     # Setup paths
-    agent_file = os.path.join(AGENT_SAVES_DIR, f"{algorithm}_agent.zip")
+    agent_file = os.path.join(args.agent_dir, f"{algorithm}_agent.zip")
     
     # Training environment parameters
     train_env_kwargs = {
@@ -79,7 +73,7 @@ def train_algorithm(algorithm, args):
         "reward_scaling": args.reward_scaling,
         "max_shares_norm": args.max_shares,
         "proxy": args.proxy,
-        "cache_dir": DATA_CACHE_DIR,
+        "cache_dir": args.data_dir,
         "window_size": args.window_size,
         "time_shift": args.time_shift,
     }
@@ -99,7 +93,7 @@ def train_algorithm(algorithm, args):
         print(f"Training {algorithm} on data from {args.train_start_date} to {args.train_end_date}...")
         checkpoint_callback = CheckpointCallback(
             save_freq=args.timesteps // 10,
-            save_path=AGENT_SAVES_DIR,
+            save_path=args.agent_dir,
             name_prefix=f"{algorithm}_checkpoint"
         )
         agent.learn(
@@ -122,7 +116,7 @@ def train_algorithm(algorithm, args):
         "reward_scaling": args.reward_scaling,
         "max_shares_norm": args.max_shares,
         "proxy": args.proxy,
-        "cache_dir": DATA_CACHE_DIR,
+        "cache_dir": args.data_dir,
         "window_size": args.window_size,
         "time_shift": args.time_shift,
     }
@@ -159,36 +153,39 @@ def train_algorithm(algorithm, args):
         plt.grid(True)
         
         plot_path = os.path.join(
-            PLOT_SAVES_DIR,
+            args.plot_dir,
             f"{algorithm}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
         )
         plt.savefig(plot_path)
         plt.close()
-        print(f"Individual plot saved to {plot_path}")
+    
+    # Prepare result data
+    final_value = results["final_portfolio_value"]
+    total_return = results["total_return"]
+    initial_balance = args.initial_balance
+    percent_return = (total_return / initial_balance) * 100
+    sharpe_ratio = results["sharpe_ratio"]
+    total_trades = results["total_trades"]
+    transaction_cost = results["total_transaction_cost"]
     
     # Print performance metrics
-    print(f"\n{algorithm.upper()} Performance Metrics:")
-    print(f"Time Period: {args.eval_start_date} to {args.eval_end_date}")
-    print(f"Initial Balance: ${results['initial_balance']:.2f}")
-    print(f"Final Portfolio Value: ${results['final_portfolio_value']:.2f}")
-    print(f"Total Return: ${results['total_return']:.2f} " +
-          f"({(results['total_return']/results['initial_balance'])*100:.2f}%)")
-    print(f"Sharpe Ratio: {results['sharpe_ratio']:.4f}")
-    print(f"Total Trades: {results['total_trades']}")
-    print(f"Total Transaction Cost: ${results['total_transaction_cost']:.2f}")
+    print(f"\nPerformance Metrics for {algorithm.upper()}:")
+    print(f"Initial Balance: ${initial_balance:,.2f}")
+    print(f"Final Portfolio Value: ${final_value:,.2f}")
+    print(f"Total Return: ${total_return:,.2f} ({percent_return:.2f}%)")
+    print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
+    print(f"Total Trades: {total_trades}")
+    print(f"Total Transaction Cost: ${transaction_cost:,.2f}")
     
-    # Clean up
-    eval_env.close()
-    train_env.close()
-    
+    # Return results for comparative analysis
     return {
-        'algorithm': algorithm,
-        'portfolio_values': results["portfolio_values"],
-        'final_value': results["final_portfolio_value"],
-        'total_return': results["total_return"],
-        'sharpe_ratio': results["sharpe_ratio"],
-        'total_trades': results["total_trades"],
-        'transaction_cost': results["total_transaction_cost"],
+        "algorithm": algorithm,
+        "final_value": final_value,
+        "total_return": total_return,
+        "sharpe_ratio": sharpe_ratio,
+        "total_trades": total_trades,
+        "transaction_cost": transaction_cost,
+        "portfolio_values": results["portfolio_values"]
     }
 
 def normalize_portfolio_values(portfolio_values, initial_balance):
@@ -196,45 +193,33 @@ def normalize_portfolio_values(portfolio_values, initial_balance):
     return [value / initial_balance * 100 for value in portfolio_values]
 
 def create_comparative_plot(all_results, args):
-    """Create a comparative plot with results from multiple algorithms"""
-    plt.figure(figsize=(14, 8))
+    """Create and save a comparative plot for multiple algorithms"""
+    plt.figure(figsize=(14, 7))
     
-    # Plot settings
-    colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k']
-    linestyles = ['-', '--', '-.', ':']
+    # For returning values as percentage of initial balance
+    initial_balance = args.initial_balance
     
-    # Sort results by performance if needed
-    if args.sort_results:
-        all_results.sort(key=lambda x: x['final_value'], reverse=True)
-    
-    # Plot each algorithm's portfolio values
-    for i, result in enumerate(all_results):
-        color_idx = i % len(colors)
-        style_idx = i % len(linestyles)
-        
+    for result in all_results:
+        portfolio_values = result["portfolio_values"]
         if args.normalize_values:
-            # Plot as percentage of initial balance
-            values = normalize_portfolio_values(result['portfolio_values'], args.initial_balance)
-            plt.plot(values, color=colors[color_idx], linestyle=linestyles[style_idx], 
-                     label=f"{result['algorithm'].upper()} ({values[-1]:.2f}%)")
+            # Convert to percentage of initial balance
+            portfolio_values = [v / initial_balance * 100 for v in portfolio_values]
+            ylabel = "Portfolio Value (% of Initial)"
         else:
-            # Plot raw values
-            plt.plot(result['portfolio_values'], color=colors[color_idx], linestyle=linestyles[style_idx], 
-                     label=f"{result['algorithm'].upper()} (${result['portfolio_values'][-1]:.2f})")
+            ylabel = "Portfolio Value ($)"
+        
+        plt.plot(portfolio_values, label=f"{result['algorithm'].upper()} (Final: {'%.2f%%' % (result['total_return']/initial_balance*100) if args.normalize_values else '${:,.2f}'.format(result['final_value'])})")
     
-    # Add plot details
-    title_suffix = "- Normalized (%)" if args.normalize_values else ""
-    plt.title(f"Comparative Performance {title_suffix} - Evaluation Period: {args.eval_start_date} to {args.eval_end_date}")
+    plt.title(f"Portfolio Value Comparison (Evaluation Period: {args.eval_start_date} to {args.eval_end_date})")
     plt.xlabel("Day")
-    plt.ylabel("Portfolio Value (%)" if args.normalize_values else "Portfolio Value ($)")
+    plt.ylabel(ylabel)
     plt.grid(True)
     plt.legend(loc='upper left')
     
     filename = f"comparison_{args.eval_start_date}_{args.eval_end_date}"
     if args.normalize_values:
         filename += "_normalized"
-        
-    plot_path = os.path.join(PLOT_SAVES_DIR, f"{filename}.png")
+    plot_path = os.path.join(args.plot_dir, f"{filename}.png")
     plt.savefig(plot_path)
     plt.close()
     
@@ -287,7 +272,7 @@ def create_performance_table(all_results, args):
     plt.title(f"Performance Comparison - {args.eval_start_date} to {args.eval_end_date}", fontsize=14, pad=20)
     
     # Save the table
-    table_path = os.path.join(PLOT_SAVES_DIR, f"performance_table_{args.eval_start_date}_{args.eval_end_date}.png")
+    table_path = os.path.join(args.plot_dir, f"performance_table_{args.eval_start_date}_{args.eval_end_date}.png")
     plt.savefig(table_path, bbox_inches='tight')
     plt.close()
     
@@ -296,9 +281,10 @@ def create_performance_table(all_results, args):
 def train_and_evaluate(args):
     """Train multiple algorithms and compare their performance"""
     # Ensure directories exist
-    os.makedirs(AGENT_SAVES_DIR, exist_ok=True)
-    os.makedirs(PLOT_SAVES_DIR, exist_ok=True)
-    os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+    os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(args.agent_dir, exist_ok=True)
+    os.makedirs(args.plot_dir, exist_ok=True)
+    os.makedirs(args.data_dir, exist_ok=True)
     
     # Process selected algorithms
     algorithms = args.algorithms.split(',')
@@ -326,7 +312,7 @@ def train_and_evaluate(args):
         plt.grid(True)
         
         plot_path = os.path.join(
-            PLOT_SAVES_DIR,
+            args.plot_dir,
             f"{all_results[0]['algorithm']}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
         )
         plt.savefig(plot_path)
@@ -334,6 +320,16 @@ def train_and_evaluate(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train and evaluate RL algorithms for trading")
+    
+    # Directory paths
+    parser.add_argument('--save-dir', type=str, default="saves",
+                        help='Base directory for all saved files')
+    parser.add_argument('--agent-dir', type=str, default=None,
+                        help='Directory for agent models (default: {save_dir}/agents)')
+    parser.add_argument('--plot-dir', type=str, default=None,
+                        help='Directory for saved plots (default: {save_dir}/plots)')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Directory for cached data (default: {save_dir}/data)')
     
     # Algorithm selection
     parser.add_argument('--algorithms', type=str, default='a2c,ppo,ddpg,td3',
@@ -380,12 +376,28 @@ def parse_args():
                         help='Maximum shares per trade normalization factor')
     parser.add_argument('--window-size', type=int, default=10,
                         help='Number of days to include in state observation window')
-    parser.add_argument('--proxy', type=str, default=None,
+    parser.add_argument('--proxy', type=str, default="http://127.0.0.1:7890",
                         help='Proxy server URL (optional)')
     parser.add_argument('--time-shift', type=int, default=0,
                         help='Temporal shift in days (positive=future data, negative=past data)')
     
-    return parser.parse_args()
+    # Hyperparameters to tune
+    parser.add_argument('--window-size', type=int, default=10,
+                        help="Window size")
+    parser.add_argument('--time-shift', type=int, default=0,
+                        help="How many days to shift when constructing the window")
+    
+    args = parser.parse_args()
+    
+    # Set default directories if not specified
+    if args.agent_dir is None:
+        args.agent_dir = os.path.join(args.save_dir, "agents")
+    if args.plot_dir is None:
+        args.plot_dir = os.path.join(args.save_dir, "plots")
+    if args.data_dir is None:
+        args.data_dir = os.path.join(args.save_dir, "data")
+    
+    return args
 
 def main():
     args = parse_args()
