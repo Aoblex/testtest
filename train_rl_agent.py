@@ -5,9 +5,6 @@ from stable_baselines3 import A2C, PPO, DDPG, TD3
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import stock_portfolio_env
-import gymnasium as gym
-import numpy as np
-from datetime import datetime
 
 # Base directories
 SAVES_DIR = "saves"
@@ -227,9 +224,7 @@ def create_comparative_plot(all_results, args):
     plt.grid(True)
     plt.legend(loc='upper left')
     
-    # Add a timestamp to the filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"comparison_{args.eval_start_date}_{args.eval_end_date}_{timestamp}"
+    filename = f"comparison_{args.eval_start_date}_{args.eval_end_date}"
     if args.normalize_values:
         filename += "_normalized"
         
@@ -285,8 +280,7 @@ def create_performance_table(all_results, args):
     plt.title(f"Performance Comparison - {args.eval_start_date} to {args.eval_end_date}", fontsize=14, pad=20)
     
     # Save the table
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    table_path = os.path.join(PLOT_SAVES_DIR, f"performance_table_{timestamp}.png")
+    table_path = os.path.join(PLOT_SAVES_DIR, f"performance_table_{args.eval_start_date}_{args.eval_end_date}.png")
     plt.savefig(table_path, bbox_inches='tight')
     plt.close()
     
