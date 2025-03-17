@@ -374,18 +374,14 @@ def parse_args():
                         help='Scaling factor for rewards')
     parser.add_argument('--max-shares', type=int, default=100,
                         help='Maximum shares per trade normalization factor')
-    parser.add_argument('--window-size', type=int, default=10,
-                        help='Number of days to include in state observation window')
     parser.add_argument('--proxy', type=str, default="http://127.0.0.1:7890",
                         help='Proxy server URL (optional)')
-    parser.add_argument('--time-shift', type=int, default=0,
-                        help='Temporal shift in days (positive=future data, negative=past data)')
     
     # Hyperparameters to tune
     parser.add_argument('--window-size', type=int, default=10,
-                        help="Window size")
+                        help='Number of days to include in state observation window')
     parser.add_argument('--time-shift', type=int, default=0,
-                        help="How many days to shift when constructing the window")
+                        help='Temporal shift in days (positive=future data, negative=past data)')
     
     args = parser.parse_args()
     
