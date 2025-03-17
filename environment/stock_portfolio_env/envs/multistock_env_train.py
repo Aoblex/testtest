@@ -23,6 +23,7 @@ class MultiStockEnvTrain(gym.Env):
         cache_dir: str = "ticker_data",
         proxy: str | None = None,
         render_mode: str | None = None,
+        window_size: int = 10,  # Default window size of 10 days
     ):
         """
         Initialize the stock trading environment
@@ -37,6 +38,7 @@ class MultiStockEnvTrain(gym.Env):
         - max_shares_norm: normalization factor for maximum shares per trade
         - cache_dir: directory to store cached data
         - proxy: proxy server for downloading data (e.g., "http://10.10.1.10:1080")
+        - window_size: number of days of historical data to include in each observation
         """
         super(MultiStockEnvTrain, self).__init__()
 
@@ -53,6 +55,7 @@ class MultiStockEnvTrain(gym.Env):
         self.stock_dim = len(tickers)
         self.cache_dir = cache_dir
         self.proxy = proxy
+        self.window_size = window_size
         
         # Create cache directory if it doesn't exist
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -66,7 +69,12 @@ class MultiStockEnvTrain(gym.Env):
         # Download and process data
         self.data = self._load_or_download_data()
         self.dates = self._get_common_dates()
-        self.day = 0
+        
+        # We need at least window_size days of data
+        if len(self.dates) < self.window_size:
+            raise ValueError(f"Not enough trading days. Need at least {self.window_size} days, but only have {len(self.dates)}.")
+        
+        self.day = self.window_size - 1  # Start after we have enough history for a full window
         
         # Action space: continuous values between -1 and 1 for each stock
         # -1 = sell max, 0 = hold, 1 = buy max
@@ -76,12 +84,13 @@ class MultiStockEnvTrain(gym.Env):
         
         # Observation space includes:
         # - Account balance (1)
-        # - Stock prices (stock_dim)
         # - Owned shares (stock_dim)
-        # - MACD values (stock_dim)
-        # - RSI values (stock_dim)
-        # Total dimension = 1 + 4*stock_dim
-        state_dim = 1 + 4 * self.stock_dim
+        # - Stock prices for window_size days (stock_dim * window_size)
+        # - MACD values for window_size days (stock_dim * window_size)
+        # - RSI values for window_size days (stock_dim * window_size)
+        # Total dimension = 1 + 3*stock_dim*window_size + stock_dim
+        features_per_day = 3  # price, MACD, RSI
+        state_dim = 1 + self.stock_dim + (features_per_day * self.stock_dim * self.window_size)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
         )
@@ -213,43 +222,39 @@ class MultiStockEnvTrain(gym.Env):
         return sorted(list(common_dates))
 
     def _get_observation(self):
-        """Get current state observation"""
-        # Get the current date
-        current_date = self.dates[self.day]
-        
+        """Get current state observation with historical data"""
         # Initialize state with balance
         state = [self.balance]
         
-        # Add all stock prices
-        prices = []
-        for ticker in self.tickers:
-            if current_date in self.data[ticker].index:
-                prices.append(self.data[ticker].loc[current_date, 'adjcp'])
-            else:
-                # Use previous value if data is missing for this date
-                prices.append(0)
-        state.extend(prices)
-        
-        # Add owned shares
+        # Add current owned shares
         state.extend(self.shares)
         
-        # Add MACD values
-        macd_values = []
-        for ticker in self.tickers:
-            if current_date in self.data[ticker].index:
-                macd_values.append(self.data[ticker].loc[current_date, 'macd'])
-            else:
-                macd_values.append(0)
-        state.extend(macd_values)
-        
-        # Add RSI values
-        rsi_values = []
-        for ticker in self.tickers:
-            if current_date in self.data[ticker].index:
-                rsi_values.append(self.data[ticker].loc[current_date, 'rsi'])
-            else:
-                rsi_values.append(0)
-        state.extend(rsi_values)
+        # Add historical data for each feature over the window
+        for day_offset in range(self.window_size):
+            # Calculate the index in the dates array
+            date_idx = self.day - (self.window_size - 1) + day_offset
+            current_date = self.dates[date_idx]
+            
+            # Add prices for this day
+            for ticker in self.tickers:
+                if current_date in self.data[ticker].index:
+                    state.append(self.data[ticker].loc[current_date, 'adjcp'])
+                else:
+                    state.append(0)
+            
+            # Add MACD values for this day
+            for ticker in self.tickers:
+                if current_date in self.data[ticker].index:
+                    state.append(self.data[ticker].loc[current_date, 'macd'])
+                else:
+                    state.append(0)
+            
+            # Add RSI values for this day
+            for ticker in self.tickers:
+                if current_date in self.data[ticker].index:
+                    state.append(self.data[ticker].loc[current_date, 'rsi'])
+                else:
+                    state.append(0)
         
         return np.array(state, dtype=np.float32)
 
@@ -405,8 +410,8 @@ class MultiStockEnvTrain(gym.Env):
     
     def reset(self, seed=None, options=None):
         """Reset the environment for a new episode"""
-        # Reset day counter
-        self.day = 0
+        # Set day counter to have enough history for a full window
+        self.day = self.window_size - 1
         
         # Reset balance and shares
         self.balance = self.initial_balance
