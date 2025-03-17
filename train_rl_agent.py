@@ -81,6 +81,7 @@ def train_algorithm(algorithm, args):
         "proxy": args.proxy,
         "cache_dir": DATA_CACHE_DIR,
         "window_size": args.window_size,
+        "time_shift": args.time_shift,
     }
     
     # Create vectorized environment for training
@@ -123,6 +124,7 @@ def train_algorithm(algorithm, args):
         "proxy": args.proxy,
         "cache_dir": DATA_CACHE_DIR,
         "window_size": args.window_size,
+        "time_shift": args.time_shift,
     }
     
     # Create environment for evaluation
@@ -146,8 +148,12 @@ def train_algorithm(algorithm, args):
     # Generate individual plot if requested
     if args.individual_plots:
         plt.figure(figsize=(12, 6))
+        if args.time_shift != 0:
+            time_shift_label = f" (Shift={args.time_shift:+d})"  # +1 or -1 format
+        else:
+            time_shift_label = ""
         plt.plot(results["portfolio_values"])
-        plt.title(f"Portfolio Value using {algorithm.upper()} (Evaluation Period)")
+        plt.title(f"Portfolio Value using {algorithm.upper()}{time_shift_label} (Evaluation Period)")
         plt.xlabel("Day")
         plt.ylabel("Portfolio Value ($)")
         plt.grid(True)
@@ -242,7 +248,7 @@ def create_performance_table(all_results, args):
     plt.figure(figsize=(12, len(all_results) * 0.5 + 2))
     plt.axis('off')
     
-    headers = ['Algorithm', 'Final Value ($)', 'Return ($)', 'Return (%)', 'Sharpe', 'Trades', 'Costs ($)']
+    headers = ['Algorithm', 'Shift', 'Final Value ($)', 'Return ($)', 'Return (%)', 'Sharpe', 'Trades', 'Costs ($)']
     
     # Sort results by performance if needed
     if args.sort_results:
@@ -253,6 +259,7 @@ def create_performance_table(all_results, args):
     for result in all_results:
         row = [
             result['algorithm'].upper(),
+            f"{args.time_shift:+d}",  # Show +1 or -1 format
             f"{result['final_value']:,.2f}",
             f"{result['total_return']:,.2f}",
             f"{(result['total_return']/args.initial_balance)*100:.2f}%",
@@ -375,6 +382,8 @@ def parse_args():
                         help='Number of days to include in state observation window')
     parser.add_argument('--proxy', type=str, default=None,
                         help='Proxy server URL (optional)')
+    parser.add_argument('--time-shift', type=int, default=0,
+                        help='Temporal shift in days (positive=future data, negative=past data)')
     
     return parser.parse_args()
 
