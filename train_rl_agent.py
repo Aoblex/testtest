@@ -6,6 +6,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import stock_portfolio_env
 import gymnasium as gym
+import numpy as np
+from datetime import datetime
 
 # Base directories
 SAVES_DIR = "saves"
@@ -50,7 +52,7 @@ def create_agent(algorithm, env, agent_path=None):
     
     if agent_path and os.path.exists(agent_path):
         print(f"Loading pre-trained {algorithm} agent from {agent_path}")
-        return AlgorithmClass.load(agent_path, env=env)
+        return AlgorithmClass.load(agent_path, env=env, device="cpu")
     
     print(f"Creating new {algorithm} agent")
     return AlgorithmClass(
@@ -61,14 +63,14 @@ def create_agent(algorithm, env, agent_path=None):
         **params
     )
 
-def train_and_evaluate(args):
-    """Train an agent and evaluate its performance"""
-    # Ensure directories exist
-    os.makedirs(AGENT_SAVES_DIR, exist_ok=True)
-    os.makedirs(PLOT_SAVES_DIR, exist_ok=True)
-    os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+def train_algorithm(algorithm, args):
+    """Train a single algorithm and return its evaluation results"""
+    print(f"\n{'='*50}")
+    print(f"Processing {algorithm.upper()} algorithm")
+    print(f"{'='*50}")
     
-    agent_file = os.path.join(AGENT_SAVES_DIR, f"{args.algorithm}_agent.zip")
+    # Setup paths
+    agent_file = os.path.join(AGENT_SAVES_DIR, f"{algorithm}_agent.zip")
     
     # Training environment parameters
     train_env_kwargs = {
@@ -92,15 +94,15 @@ def train_and_evaluate(args):
     )
     
     # Create or load agent
-    agent = create_agent(args.algorithm, train_env, agent_file if not args.force_train else None)
+    agent = create_agent(algorithm, train_env, agent_file if not args.force_train else None)
     
     # Train if needed
     if not os.path.exists(agent_file) or args.force_train:
-        print(f"Training {args.algorithm} on data from {args.train_start_date} to {args.train_end_date}...")
+        print(f"Training {algorithm} on data from {args.train_start_date} to {args.train_end_date}...")
         checkpoint_callback = CheckpointCallback(
             save_freq=args.timesteps // 10,
             save_path=AGENT_SAVES_DIR,
-            name_prefix=f"{args.algorithm}_checkpoint"
+            name_prefix=f"{algorithm}_checkpoint"
         )
         agent.learn(
             total_timesteps=args.timesteps,
@@ -109,6 +111,8 @@ def train_and_evaluate(args):
         )
         agent.save(agent_file)
         print(f"Agent saved to {agent_file}")
+    else:
+        print(f"Using existing {algorithm} agent from {agent_file}")
     
     # Evaluation environment parameters
     eval_env_kwargs = {
@@ -125,7 +129,7 @@ def train_and_evaluate(args):
     }
     
     # Create environment for evaluation
-    print(f"Evaluating on data from {args.eval_start_date} to {args.eval_end_date}...")
+    print(f"Evaluating {algorithm} on data from {args.eval_start_date} to {args.eval_end_date}...")
     eval_env = make_vec_env(
         "stock_portfolio_env/MultiStockEnvTrain-v0",
         n_envs=1,
@@ -139,26 +143,28 @@ def train_and_evaluate(args):
         observation, reward, dones, info = eval_env.step(action)
         done = dones[0]
     
-    # Plot results
+    # Get results
     results = eval_env.get_attr("results")[0]
     
-    # Plot portfolio values
-    plt.figure(figsize=(12, 6))
-    plt.plot(results["portfolio_values"])
-    plt.title(f"Portfolio Value using {args.algorithm.upper()} (Evaluation Period)")
-    plt.xlabel("Day")
-    plt.ylabel("Portfolio Value ($)")
-    plt.grid(True)
-    
-    plot_path = os.path.join(
-        PLOT_SAVES_DIR,
-        f"{args.algorithm}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
-    )
-    plt.savefig(plot_path)
-    plt.close()
+    # Generate individual plot if requested
+    if args.individual_plots:
+        plt.figure(figsize=(12, 6))
+        plt.plot(results["portfolio_values"])
+        plt.title(f"Portfolio Value using {algorithm.upper()} (Evaluation Period)")
+        plt.xlabel("Day")
+        plt.ylabel("Portfolio Value ($)")
+        plt.grid(True)
+        
+        plot_path = os.path.join(
+            PLOT_SAVES_DIR,
+            f"{algorithm}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
+        )
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Individual plot saved to {plot_path}")
     
     # Print performance metrics
-    print("\nEvaluation Performance Metrics:")
+    print(f"\n{algorithm.upper()} Performance Metrics:")
     print(f"Time Period: {args.eval_start_date} to {args.eval_end_date}")
     print(f"Initial Balance: ${results['initial_balance']:.2f}")
     print(f"Final Portfolio Value: ${results['final_portfolio_value']:.2f}")
@@ -168,18 +174,177 @@ def train_and_evaluate(args):
     print(f"Total Trades: {results['total_trades']}")
     print(f"Total Transaction Cost: ${results['total_transaction_cost']:.2f}")
     
-    print(f"\nResults plot saved to {plot_path}")
-    
     # Clean up
     eval_env.close()
     train_env.close()
+    
+    return {
+        'algorithm': algorithm,
+        'portfolio_values': results["portfolio_values"],
+        'final_value': results["final_portfolio_value"],
+        'total_return': results["total_return"],
+        'sharpe_ratio': results["sharpe_ratio"],
+        'total_trades': results["total_trades"],
+        'transaction_cost': results["total_transaction_cost"],
+    }
+
+def normalize_portfolio_values(portfolio_values, initial_balance):
+    """Normalize portfolio values as percentage of initial balance"""
+    return [value / initial_balance * 100 for value in portfolio_values]
+
+def create_comparative_plot(all_results, args):
+    """Create a comparative plot with results from multiple algorithms"""
+    plt.figure(figsize=(14, 8))
+    
+    # Plot settings
+    colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k']
+    linestyles = ['-', '--', '-.', ':']
+    
+    # Sort results by performance if needed
+    if args.sort_results:
+        all_results.sort(key=lambda x: x['final_value'], reverse=True)
+    
+    # Plot each algorithm's portfolio values
+    for i, result in enumerate(all_results):
+        color_idx = i % len(colors)
+        style_idx = i % len(linestyles)
+        
+        if args.normalize_values:
+            # Plot as percentage of initial balance
+            values = normalize_portfolio_values(result['portfolio_values'], args.initial_balance)
+            plt.plot(values, color=colors[color_idx], linestyle=linestyles[style_idx], 
+                     label=f"{result['algorithm'].upper()} ({values[-1]:.2f}%)")
+        else:
+            # Plot raw values
+            plt.plot(result['portfolio_values'], color=colors[color_idx], linestyle=linestyles[style_idx], 
+                     label=f"{result['algorithm'].upper()} (${result['portfolio_values'][-1]:.2f})")
+    
+    # Add plot details
+    title_suffix = "- Normalized (%)" if args.normalize_values else ""
+    plt.title(f"Comparative Performance {title_suffix} - Evaluation Period: {args.eval_start_date} to {args.eval_end_date}")
+    plt.xlabel("Day")
+    plt.ylabel("Portfolio Value (%)" if args.normalize_values else "Portfolio Value ($)")
+    plt.grid(True)
+    plt.legend(loc='upper left')
+    
+    # Add a timestamp to the filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"comparison_{args.eval_start_date}_{args.eval_end_date}_{timestamp}"
+    if args.normalize_values:
+        filename += "_normalized"
+        
+    plot_path = os.path.join(PLOT_SAVES_DIR, f"{filename}.png")
+    plt.savefig(plot_path)
+    plt.close()
+    
+    print(f"\nComparative plot saved to {plot_path}")
+    
+    # Create performance summary table
+    create_performance_table(all_results, args)
+
+def create_performance_table(all_results, args):
+    """Create and save a table of performance metrics"""
+    plt.figure(figsize=(12, len(all_results) * 0.5 + 2))
+    plt.axis('off')
+    
+    headers = ['Algorithm', 'Final Value ($)', 'Return ($)', 'Return (%)', 'Sharpe', 'Trades', 'Costs ($)']
+    
+    # Sort results by performance if needed
+    if args.sort_results:
+        all_results.sort(key=lambda x: x['final_value'], reverse=True)
+    
+    # Prepare table data
+    cell_data = []
+    for result in all_results:
+        row = [
+            result['algorithm'].upper(),
+            f"{result['final_value']:,.2f}",
+            f"{result['total_return']:,.2f}",
+            f"{(result['total_return']/args.initial_balance)*100:.2f}%",
+            f"{result['sharpe_ratio']:.4f}",
+            str(result['total_trades']),
+            f"{result['transaction_cost']:,.2f}"
+        ]
+        cell_data.append(row)
+    
+    # Create the table
+    table = plt.table(
+        cellText=cell_data,
+        colLabels=headers,
+        loc='center',
+        cellLoc='center',
+        colColours=['#f2f2f2'] * len(headers)
+    )
+    
+    # Set table properties
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.5)
+    
+    # Add a title
+    plt.title(f"Performance Comparison - {args.eval_start_date} to {args.eval_end_date}", fontsize=14, pad=20)
+    
+    # Save the table
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    table_path = os.path.join(PLOT_SAVES_DIR, f"performance_table_{timestamp}.png")
+    plt.savefig(table_path, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Performance summary table saved to {table_path}")
+
+def train_and_evaluate(args):
+    """Train multiple algorithms and compare their performance"""
+    # Ensure directories exist
+    os.makedirs(AGENT_SAVES_DIR, exist_ok=True)
+    os.makedirs(PLOT_SAVES_DIR, exist_ok=True)
+    os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+    
+    # Process selected algorithms
+    algorithms = args.algorithms.split(',')
+    print(f"Processing {len(algorithms)} algorithms: {', '.join([a.upper() for a in algorithms])}")
+    
+    # Collect results from all algorithms
+    all_results = []
+    for algorithm in algorithms:
+        if algorithm.lower() in ALGORITHMS:
+            result = train_algorithm(algorithm.lower(), args)
+            all_results.append(result)
+        else:
+            print(f"Warning: Algorithm '{algorithm}' not recognized and will be skipped.")
+    
+    # Create comparative plot if we have results from multiple algorithms
+    if len(all_results) > 1:
+        create_comparative_plot(all_results, args)
+    elif len(all_results) == 1 and not args.individual_plots:
+        # Create individual plot if not already created
+        plt.figure(figsize=(12, 6))
+        plt.plot(all_results[0]['portfolio_values'])
+        plt.title(f"Portfolio Value using {all_results[0]['algorithm'].upper()} (Evaluation Period)")
+        plt.xlabel("Day")
+        plt.ylabel("Portfolio Value ($)")
+        plt.grid(True)
+        
+        plot_path = os.path.join(
+            PLOT_SAVES_DIR,
+            f"{all_results[0]['algorithm']}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
+        )
+        plt.savefig(plot_path)
+        plt.close()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train and evaluate RL algorithms for trading")
     
     # Algorithm selection
-    parser.add_argument('--algorithm', type=str, default='a2c', choices=ALGORITHMS.keys(),
-                        help='RL algorithm to use')
+    parser.add_argument('--algorithms', type=str, default='a2c,ppo,ddpg,td3',
+                        help='Comma-separated list of algorithms to use (a2c,ppo,ddpg,td3)')
+    
+    # Plotting options
+    parser.add_argument('--individual-plots', action='store_true',
+                        help='Generate individual plots for each algorithm')
+    parser.add_argument('--normalize-values', action='store_true',
+                        help='Normalize portfolio values as percentage of initial balance')
+    parser.add_argument('--sort-results', action='store_true',
+                        help='Sort algorithms by performance in plots and tables')
     
     # Training parameters
     parser.add_argument('--timesteps', type=int, default=20000, 
