@@ -88,7 +88,7 @@ def train_algorithm(algorithm, args):
     
     # Create vectorized environment for training
     train_env = make_vec_env(
-        "stock_portfolio_env/MultiStockEnvTrain-v0",
+        "stock_portfolio_env/MultiStockEnv-v0",
         n_envs=args.n_envs,
         env_kwargs=train_env_kwargs,
     )
@@ -131,7 +131,7 @@ def train_algorithm(algorithm, args):
     # Create environment for evaluation
     print(f"Evaluating {algorithm} on data from {args.eval_start_date} to {args.eval_end_date}...")
     eval_env = make_vec_env(
-        "stock_portfolio_env/MultiStockEnvTrain-v0",
+        "stock_portfolio_env/MultiStockEnv-v0",
         n_envs=1,
         env_kwargs=eval_env_kwargs,
     )

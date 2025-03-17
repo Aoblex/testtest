@@ -1,4 +1,3 @@
-from stock_portfolio_env.envs.multistock_env_train import MultiStockEnvTrain
-from stock_portfolio_env.envs.multistock_env_trade import MultiStockEnvTrade
+from stock_portfolio_env.envs.multistock_env import MultiStockEnv
 
-__all__ = ["MultiStockEnvTrain", "MultiStockEnvTrade"]
+__all__ = ["MultiStockEnv"]
