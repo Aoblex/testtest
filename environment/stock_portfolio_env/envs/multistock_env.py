@@ -24,6 +24,7 @@ class MultiStockEnv(gym.Env):
         proxy: str | None = None,
         render_mode: str | None = None,
         window_size: int = 10,  # Default window size of 10 days
+        time_shift: int = 0,  # Default time shift of 0 days
     ):
         """
         Initialize the stock trading environment
@@ -39,6 +40,7 @@ class MultiStockEnv(gym.Env):
         - cache_dir: directory to store cached data
         - proxy: proxy server for downloading data (e.g., "http://10.10.1.10:1080")
         - window_size: number of days of historical data to include in each observation
+        - time_shift: number of days to shift the observation window forward or backward
         """
         super(MultiStockEnv, self).__init__()
 
@@ -56,7 +58,7 @@ class MultiStockEnv(gym.Env):
         self.cache_dir = cache_dir
         self.proxy = proxy
         self.window_size = window_size
-        
+        self.time_shift = time_shift
         # Create cache directory if it doesn't exist
         os.makedirs(self.cache_dir, exist_ok=True)
         
@@ -221,6 +223,14 @@ class MultiStockEnv(gym.Env):
         # Sort the dates
         return sorted(list(common_dates))
 
+    def _get_window_start_day(self):
+        """Get the start date of the observation window"""
+        return self.day - (self.window_size - 1) + self.time_shift
+
+    def _get_window_end_day(self):
+        """Get the end date of the observation window"""
+        return self.day + self.time_shift
+
     def _get_observation(self):
         """Get current state observation with historical data"""
         # Initialize state with balance
@@ -230,9 +240,13 @@ class MultiStockEnv(gym.Env):
         state.extend(self.shares)
         
         # Add historical data for each feature over the window
-        for day_offset in range(self.window_size):
+        for date_idx in range(self._get_window_start_day(), self._get_window_end_day() + 1):
             # Calculate the index in the dates array
-            date_idx = self.day - (self.window_size - 1) + day_offset
+
+            if date_idx < 0 or date_idx >= len(self.dates):
+                state.extend([0] * (3 * self.stock_dim))
+                continue
+
             current_date = self.dates[date_idx]
             
             # Add prices for this day
