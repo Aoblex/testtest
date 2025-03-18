@@ -1,17 +1,19 @@
 import os
 import argparse
 import matplotlib.pyplot as plt
-from stable_baselines3 import A2C, PPO, DDPG, TD3
+from stable_baselines3 import A2C, PPO, DDPG, TD3, SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import stock_portfolio_env
+import numpy as np
 
 # Map algorithm names to their classes
 ALGORITHMS = {
     "a2c": A2C,
     "ppo": PPO, 
     "ddpg": DDPG,
-    "td3": TD3
+    "td3": TD3,
+    "sac": SAC,
 }
 
 # Default hyperparameters for each algorithm
@@ -33,7 +35,11 @@ ALGORITHM_PARAMS = {
     "td3": {
         "learning_rate": 1e-5,
         "buffer_size": 10000,
-    }
+    },
+    "sac": {
+        "learning_rate": 1e-5,
+        "buffer_size": 10000,
+    },
 }
 
 def create_agent(algorithm, env, agent_path=None):
@@ -53,6 +59,266 @@ def create_agent(algorithm, env, agent_path=None):
         device="cpu",
         **params
     )
+
+def ensemble_algorithm(args):
+    """Create an ensemble of algorithms and evaluate its performance"""
+    print(f"\n{'='*50}")
+    print(f"Processing ENSEMBLE with method: {args.ensemble_method.upper()}")
+    print(f"{'='*50}")
+    
+    algorithms = args.algorithms.split(',')
+    print(f"Creating ensemble using {len(algorithms)} algorithms: {', '.join([a.upper() for a in algorithms])}")
+    
+    # Training environment parameters
+    train_env_kwargs = {
+        "start": args.train_start_date,
+        "end": args.train_end_date,
+        "tickers": args.tickers.split(','),
+        "initial_balance": args.initial_balance,
+        "transaction_fee_percent": args.fee,
+        "reward_scaling": args.reward_scaling,
+        "max_shares_norm": args.max_shares,
+        "proxy": args.proxy,
+        "cache_dir": args.data_dir,
+        "window_size": args.window_size,
+        "time_shift": args.time_shift,
+    }
+    
+    train_env = make_vec_env(
+        "stock_portfolio_env/MultiStockEnv-v0",
+        n_envs=1,
+        env_kwargs=train_env_kwargs,
+    )
+    
+    # Load pretrained models
+    agents = {}
+    model_weights = {}
+    for algorithm in algorithms:
+        if algorithm.lower() in ALGORITHMS:
+            agent_file = os.path.join(args.agent_dir, f"{algorithm}_agent.zip")
+            
+            if os.path.exists(agent_file):
+                print(f"Loading {algorithm.upper()} model from {agent_file}")
+                agents[algorithm] = ALGORITHMS[algorithm].load(agent_file)
+                # Default to equal weights
+                model_weights[algorithm] = 1.0 / len(algorithms)
+            else:
+                print(f"Warning: Model file {agent_file} for {algorithm} not found, skipping")
+        else:
+            print(f"Warning: Algorithm {algorithm} not recognized, skipping")
+    
+    if not agents:
+        raise ValueError("No valid agent models found. Train individual models first.")
+    
+    # Update weights based on ensemble method
+    if args.ensemble_method == 'weighted' or args.ensemble_method == 'rank_weighted':
+        print("Evaluating individual models to determine weights...")
+        
+        # Evaluate each model individually to get their performance metrics
+        model_performance = {}
+        
+        for alg_name, agent in agents.items():
+            # Reset environment for each evaluation
+            obs = train_env.reset()
+            done = False
+            
+            # Run the model
+            while not done:
+                action, _ = agent.predict(obs, deterministic=True)
+                obs, _, dones, _ = train_env.step(action)
+                done = dones[0]
+            
+            # Get results
+            results = train_env.get_attr("results")[0]
+            
+            # Store performance metrics (using Sharpe ratio or total return)
+            if args.ensemble_method == 'weighted':
+                model_performance[alg_name] = results["sharpe_ratio"]
+                print(f"{alg_name.upper()} Sharpe: {results['sharpe_ratio']:.4f}")
+            else:  # rank_weighted
+                model_performance[alg_name] = results["total_return"]
+                print(f"{alg_name.upper()} Return: ${results['total_return']:,.2f}")
+        
+        # Update weights based on performance
+        if args.ensemble_method == 'weighted':
+            # Adjust for negative Sharpe ratios
+            min_sharpe = min(model_performance.values())
+            if min_sharpe < 0:
+                adjusted_performance = {k: v - min_sharpe + 0.1 for k, v in model_performance.items()}
+            else:
+                adjusted_performance = model_performance
+                
+            # Calculate weights proportional to performance
+            total = sum(adjusted_performance.values())
+            if total > 0:  # Avoid division by zero
+                model_weights = {k: v / total for k, v in adjusted_performance.items()}
+            
+        elif args.ensemble_method == 'rank_weighted':
+            # Rank models by performance
+            ranked_models = sorted(model_performance.items(), key=lambda x: x[1], reverse=True)
+            
+            # Weights based on rank (1st place gets highest weight)
+            rank_weights = {}
+            total_rank_value = sum(1 / (i + 1) for i in range(len(ranked_models)))
+            
+            for i, (alg_name, _) in enumerate(ranked_models):
+                rank_weights[alg_name] = (1 / (i + 1)) / total_rank_value
+            
+            model_weights = rank_weights
+    
+    elif args.ensemble_method == 'best_only':
+        # Find the best performing model
+        print("Evaluating individual models to find the best one...")
+        
+        best_model = None
+        best_sharpe = float('-inf')
+        
+        for alg_name, agent in agents.items():
+            # Reset environment
+            obs = train_env.reset()
+            done = False
+            
+            # Run the model
+            while not done:
+                action, _ = agent.predict(obs, deterministic=True)
+                obs, _, dones, _ = train_env.step(action)
+                done = dones[0]
+            
+            # Get results
+            results = train_env.get_attr("results")[0]
+            sharpe = results["sharpe_ratio"]
+            
+            print(f"{alg_name.upper()} Sharpe: {sharpe:.4f}")
+            
+            if sharpe > best_sharpe:
+                best_sharpe = sharpe
+                best_model = alg_name
+        
+        # Set weights to use only best model
+        model_weights = {alg: 1.0 if alg == best_model else 0.0 for alg in agents.keys()}
+        print(f"Best model: {best_model.upper()} (Sharpe: {best_sharpe:.4f})")
+    
+    train_env.close()
+
+    # Print final model weights
+    print("\nEnsemble Weights:")
+    for alg, weight in model_weights.items():
+        print(f"{alg.upper()}: {weight:.4f}")
+    
+    # Function to combine predictions from multiple models
+    def ensemble_predict(observation, deterministic=True):
+        actions = {}
+        
+        # Get actions from all models
+        for alg_name, agent in agents.items():
+            action, _ = agent.predict(observation, deterministic=deterministic)
+            actions[alg_name] = action
+        
+        # Combine actions based on the chosen method
+        if args.ensemble_method == 'voting':
+            # For discrete action spaces, use sign voting
+            combined_action = np.zeros_like(next(iter(actions.values())))
+            
+            for alg_name, action in actions.items():
+                combined_action += np.sign(action) * model_weights[alg_name]
+            
+            # Convert to final action by taking the sign
+            combined_action = np.sign(combined_action)
+        else:
+            # Weighted average for continuous actions
+            combined_action = np.zeros_like(next(iter(actions.values())))
+            
+            for alg_name, action in actions.items():
+                combined_action += action * model_weights[alg_name]
+        
+        return combined_action
+    
+    # Evaluate the ensemble
+    print(f"\nEvaluating ensemble on data from {args.eval_start_date} to {args.eval_end_date}...")
+    
+
+    eval_env_kwargs = {
+        "start": args.eval_start_date,
+        "end": args.eval_end_date,
+        "tickers": args.tickers.split(','),
+        "initial_balance": args.initial_balance,
+        "transaction_fee_percent": args.fee,
+        "reward_scaling": args.reward_scaling,
+        "max_shares_norm": args.max_shares,
+        "proxy": args.proxy,
+        "cache_dir": args.data_dir,
+        "window_size": args.window_size,
+        "time_shift": args.time_shift,
+    }
+
+    eval_env = make_vec_env(
+        "stock_portfolio_env/MultiStockEnv-v0",
+        n_envs=1,
+        env_kwargs=eval_env_kwargs,
+    )
+    # Reset evaluation environment
+    obs = eval_env.reset()
+    done = False
+    
+    # Run the ensemble model
+    while not done:
+        action = ensemble_predict(obs, deterministic=True)
+        obs, _, dones, _ = eval_env.step(action)
+        done = dones[0]
+    
+    # Get results
+    results = eval_env.get_attr("results")[0]
+    
+    # Close environments
+    eval_env.close()
+    
+    # Generate plot
+    plt.figure(figsize=(12, 6))
+    if args.time_shift != 0:
+        time_shift_label = f" (Shift={args.time_shift:+d})"  # +1 or -1 format
+    else:
+        time_shift_label = ""
+    plt.plot(results["portfolio_values"])
+    plt.title(f"Portfolio Value using ENSEMBLE ({args.ensemble_method.upper()}){time_shift_label} (Evaluation Period)")
+    plt.xlabel("Day")
+    plt.ylabel("Portfolio Value ($)")
+    plt.grid(True)
+    
+    plot_path = os.path.join(
+        args.plot_dir,
+        f"ensemble_{args.ensemble_method}_portfolio_eval_{args.eval_start_date}_{args.eval_end_date}.png"
+    )
+    plt.savefig(plot_path)
+    plt.close()
+    
+    # Prepare result data
+    final_value = results["final_portfolio_value"]
+    total_return = results["total_return"]
+    initial_balance = args.initial_balance
+    percent_return = (total_return / initial_balance) * 100
+    sharpe_ratio = results["sharpe_ratio"]
+    total_trades = results["total_trades"]
+    transaction_cost = results["total_transaction_cost"]
+    
+    # Print performance metrics
+    print(f"\nPerformance Metrics for ENSEMBLE ({args.ensemble_method.upper()}):")
+    print(f"Initial Balance: ${initial_balance:,.2f}")
+    print(f"Final Portfolio Value: ${final_value:,.2f}")
+    print(f"Total Return: ${total_return:,.2f} ({percent_return:.2f}%)")
+    print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
+    print(f"Total Trades: {total_trades}")
+    print(f"Total Transaction Cost: ${transaction_cost:,.2f}")
+    
+    # Return results for comparative analysis
+    return {
+        "algorithm": f"ensemble_{args.ensemble_method}",
+        "final_value": final_value,
+        "total_return": total_return,
+        "sharpe_ratio": sharpe_ratio,
+        "total_trades": total_trades,
+        "transaction_cost": transaction_cost,
+        "portfolio_values": results["portfolio_values"]
+    }
 
 def train_algorithm(algorithm, args):
     """Train a single algorithm and return its evaluation results"""
@@ -86,7 +352,10 @@ def train_algorithm(algorithm, args):
     )
     
     # Create or load agent
-    agent = create_agent(algorithm, train_env, agent_file if not args.force_train else None)
+    agent = create_agent(
+        algorithm, train_env,
+        agent_file if not args.force_train else None
+    )
     
     # Train if needed
     if not os.path.exists(agent_file) or args.force_train:
@@ -292,6 +561,11 @@ def train_and_evaluate(args):
     
     # Collect results from all algorithms
     all_results = []
+    
+    # Check if using ensemble
+    use_ensemble = args.ensemble_method not in ["", "none", "None"]
+    
+    # Train/evaluate individual algorithms
     for algorithm in algorithms:
         if algorithm.lower() in ALGORITHMS:
             result = train_algorithm(algorithm.lower(), args)
@@ -299,7 +573,13 @@ def train_and_evaluate(args):
         else:
             print(f"Warning: Algorithm '{algorithm}' not recognized and will be skipped.")
     
-    # Create comparative plot if we have results from multiple algorithms
+    # Run ensemble if specified
+    if use_ensemble and len(algorithms) > 1:
+        print("\nCreating ensemble of trained models...")
+        result = ensemble_algorithm(args)
+        all_results.append(result)
+    
+    # Create comparative plot if we have results from multiple sources
     if len(all_results) > 1:
         create_comparative_plot(all_results, args)
     elif len(all_results) == 1 and not args.individual_plots:
@@ -332,8 +612,8 @@ def parse_args():
                         help='Directory for cached data (default: {save_dir}/data)')
     
     # Algorithm selection
-    parser.add_argument('--algorithms', type=str, default='a2c,ppo,ddpg,td3',
-                        help='Comma-separated list of algorithms to use (a2c,ppo,ddpg,td3)')
+    parser.add_argument('--algorithms', type=str, default='a2c,ppo,ddpg,td3,sac',
+                        help='Comma-separated list of algorithms to use (a2c,ppo,ddpg,td3,sac)')
     
     # Plotting options
     parser.add_argument('--individual-plots', action='store_true',
@@ -378,10 +658,14 @@ def parse_args():
                         help='Proxy server URL (optional)')
     
     # Hyperparameters to tune
-    parser.add_argument('--window-size', type=int, default=10,
+    parser.add_argument('--window-size', type=int, default=16,
                         help='Number of days to include in state observation window')
     parser.add_argument('--time-shift', type=int, default=0,
                         help='Temporal shift in days (positive=future data, negative=past data)')
+
+    # Ensemble method
+    parser.add_argument('--ensemble-method', type=str, default='average',
+                        help='Ensemble method to use (average, weighted, rank_weighted, voting, best_only)')
     
     args = parser.parse_args()
     
